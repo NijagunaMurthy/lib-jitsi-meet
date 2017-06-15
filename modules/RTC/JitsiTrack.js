@@ -1,11 +1,21 @@
 /* global __filename, module */
-var logger = require("jitsi-meet-logger").getLogger(__filename);
-var RTCBrowserType = require("./RTCBrowserType");
-var RTCEvents = require("../../service/RTC/RTCEvents");
-var RTCUtils = require("./RTCUtils");
-var JitsiTrackEvents = require("../../JitsiTrackEvents");
-var EventEmitter = require("events");
-var MediaType = require("../../service/RTC/MediaType");
+import EventEmitter from 'events';
+import { getLogger } from 'jitsi-meet-logger';
+import * as JitsiTrackEvents from '../../JitsiTrackEvents';
+import * as MediaType from '../../service/RTC/MediaType';
+import RTCBrowserType from './RTCBrowserType';
+import RTCUtils from './RTCUtils';
+
+const logger = getLogger(__filename);
+
+/**
+ * Maps our handler types to MediaStreamTrack properties.
+ */
+const trackHandler2Prop = {
+    'track_mute': 'onmute', // Not supported on FF
+    'track_unmute': 'onunmute',
+    'track_ended': 'onended'
+};
 
 /**
  * This implements 'onended' callback normally fired by WebRTC after the stream
@@ -14,13 +24,15 @@ var MediaType = require("../../service/RTC/MediaType");
  * to which 'onended' handling will be added.
  */
 function implementOnEndedHandling(jitsiTrack) {
-    var stream = jitsiTrack.getOriginalStream();
+    const stream = jitsiTrack.getOriginalStream();
 
-    if(!stream)
+    if (!stream) {
         return;
+    }
 
-    var originalStop = stream.stop;
-    stream.stop = function () {
+    const originalStop = stream.stop;
+
+    stream.stop = function() {
         originalStop.apply(stream);
         if (jitsiTrack.isActive()) {
             stream.onended();
@@ -35,11 +47,14 @@ function implementOnEndedHandling(jitsiTrack) {
  */
 function addMediaStreamInactiveHandler(mediaStream, handler) {
     // Temasys will use onended
-    if(typeof mediaStream.active !== "undefined")
-        mediaStream.oninactive = handler;
-    else
+    if (typeof mediaStream.active === 'undefined') {
         mediaStream.onended = handler;
+    } else {
+        mediaStream.oninactive = handler;
+    }
 }
+
+/* eslint-disable max-params */
 
 /**
  * Represents a single media track (either audio or video).
@@ -52,32 +67,77 @@ function addMediaStreamInactiveHandler(mediaStream, handler) {
  *        onended/oninactive events of the stream.
  * @param trackMediaType the media type of the JitsiTrack
  * @param videoType the VideoType for this track if any
- * @param ssrc the SSRC of this track if known
  */
-function JitsiTrack(rtc, stream, track, streamInactiveHandler, trackMediaType,
-                    videoType, ssrc)
-{
+export default function JitsiTrack(
+    conference,
+    stream,
+    track,
+    streamInactiveHandler,
+    trackMediaType,
+    videoType) {
     /**
      * Array with the HTML elements that are displaying the streams.
      * @type {Array}
      */
     this.containers = [];
-    this.rtc = rtc;
+    this.conference = conference;
     this.stream = stream;
-    this.ssrc = ssrc;
     this.eventEmitter = new EventEmitter();
     this.audioLevel = -1;
     this.type = trackMediaType;
     this.track = track;
     this.videoType = videoType;
+    this.handlers = {};
 
-    if(stream) {
+    /**
+     * Indicates whether this JitsiTrack has been disposed. If true, this
+     * JitsiTrack is to be considered unusable and operations involving it are
+     * to fail (e.g. {@link JitsiConference#addTrack(JitsiTrack)},
+     * {@link JitsiConference#removeTrack(JitsiTrack)}).
+     * @type {boolean}
+     */
+    this.disposed = false;
+    this._setHandler('inactive', streamInactiveHandler);
+}
+
+/* eslint-enable max-params */
+
+/**
+ * Sets handler to the WebRTC MediaStream or MediaStreamTrack object depending
+ * on the passed type.
+ * @param {string} type the type of the handler that is going to be set
+ * @param {Function} handler the handler.
+ */
+JitsiTrack.prototype._setHandler = function(type, handler) {
+    this.handlers[type] = handler;
+    if (!this.stream) {
+        return;
+    }
+
+    if (type === 'inactive') {
         if (RTCBrowserType.isFirefox()) {
             implementOnEndedHandling(this);
         }
-        addMediaStreamInactiveHandler(stream, streamInactiveHandler);
+        addMediaStreamInactiveHandler(this.stream, handler);
+    } else if (trackHandler2Prop.hasOwnProperty(type)) {
+        this.stream.getVideoTracks().forEach(track => {
+            track[trackHandler2Prop[type]] = handler;
+        }, this);
     }
-}
+};
+
+/**
+ * Sets the stream property of JitsiTrack object and sets all stored handlers
+ * to it.
+ * @param {MediaStream} stream the new stream.
+ */
+JitsiTrack.prototype._setStream = function(stream) {
+    this.stream = stream;
+    Object.keys(this.handlers).forEach(function(type) {
+        typeof this.handlers[type] === 'function'
+            && this._setHandler(type, this.handlers[type]);
+    }, this);
+};
 
 /**
  * Returns the type (audio or video) of this track.
@@ -87,17 +147,36 @@ JitsiTrack.prototype.getType = function() {
 };
 
 /**
- * Check if this is audiotrack.
+ * Check if this is an audio track.
  */
-JitsiTrack.prototype.isAudioTrack = function () {
+JitsiTrack.prototype.isAudioTrack = function() {
     return this.getType() === MediaType.AUDIO;
 };
 
 /**
- * Check if this is videotrack.
+ * Checks whether the underlying WebRTC <tt>MediaStreamTrack</tt> is muted
+ * according to it's 'muted' field status.
+ * @return {boolean} <tt>true</tt> if the underlying <tt>MediaStreamTrack</tt>
+ * is muted or <tt>false</tt> otherwise.
  */
-JitsiTrack.prototype.isVideoTrack = function () {
+JitsiTrack.prototype.isWebRTCTrackMuted = function() {
+    return this.track && this.track.muted;
+};
+
+/**
+ * Check if this is a video track.
+ */
+JitsiTrack.prototype.isVideoTrack = function() {
     return this.getType() === MediaType.VIDEO;
+};
+
+/**
+ * Checks whether this is a local track.
+ * @abstract
+ * @return {boolean} 'true' if it's a local track or 'false' otherwise.
+ */
+JitsiTrack.prototype.isLocal = function() {
+    throw new Error('Not implemented by subclass');
 };
 
 /**
@@ -111,7 +190,7 @@ JitsiTrack.prototype.getOriginalStream = function() {
  * Returns the ID of the underlying WebRTC Media Stream(if any)
  * @returns {String|null}
  */
-JitsiTrack.prototype.getStreamId = function () {
+JitsiTrack.prototype.getStreamId = function() {
     return this.stream ? this.stream.id : null;
 };
 
@@ -119,7 +198,7 @@ JitsiTrack.prototype.getStreamId = function () {
  * Return the underlying WebRTC MediaStreamTrack
  * @returns {MediaStreamTrack}
  */
-JitsiTrack.prototype.getTrack = function () {
+JitsiTrack.prototype.getTrack = function() {
     return this.track;
 };
 
@@ -127,7 +206,7 @@ JitsiTrack.prototype.getTrack = function () {
  * Returns the ID of the underlying WebRTC MediaStreamTrack(if any)
  * @returns {String|null}
  */
-JitsiTrack.prototype.getTrackId = function () {
+JitsiTrack.prototype.getTrackId = function() {
     return this.track ? this.track.id : null;
 };
 
@@ -136,12 +215,13 @@ JitsiTrack.prototype.getTrackId = function () {
  * eventual video type.
  * @returns {string}
  */
-JitsiTrack.prototype.getUsageLabel = function () {
+JitsiTrack.prototype.getUsageLabel = function() {
     if (this.isAudioTrack()) {
-        return "mic";
-    } else {
-        return this.videoType ? this.videoType : "default";
+        return 'mic';
     }
+
+    return this.videoType ? this.videoType : 'default';
+
 };
 
 /**
@@ -150,9 +230,9 @@ JitsiTrack.prototype.getUsageLabel = function () {
  *        and for which event will be fired.
  * @private
  */
-JitsiTrack.prototype._maybeFireTrackAttached = function (container) {
-    if (this.rtc && container) {
-        this.rtc.eventEmitter.emit(RTCEvents.TRACK_ATTACHED, this, container);
+JitsiTrack.prototype._maybeFireTrackAttached = function(container) {
+    if (this.conference && container) {
+        this.conference._onTrackAttach(this, container);
     }
 };
 
@@ -172,54 +252,68 @@ JitsiTrack.prototype._maybeFireTrackAttached = function (container) {
  * @returns potentially new instance of container if it was replaced by the
  *          library. That's the case when Temasys plugin is in use.
  */
-JitsiTrack.prototype.attach = function (container) {
-    if(this.stream) {
-        // The container must be visible in order to play or attach the stream
-        // when Temasys plugin is in use
-        var containerSel = $(container);
-        if (RTCBrowserType.isTemasysPluginUsed() &&
-            !containerSel.is(':visible')) {
-            containerSel.show();
-        }
-        container
-            = RTCUtils.attachMediaStream(container, this.stream);
+JitsiTrack.prototype.attach = function(container) {
+    let c = container;
+
+    if (this.stream) {
+        c = RTCUtils.attachMediaStream(container, this.stream);
     }
-    this.containers.push(container);
+    this.containers.push(c);
+    this._maybeFireTrackAttached(c);
+    this._attachTTFMTracker(c);
 
-    this._maybeFireTrackAttached(container);
-
-    return container;
+    return c;
 };
 
 /**
- * Removes the track from the passed HTML container.
- * @param container the HTML container. If <tt>null</tt> all containers are removed.
- *        A container can be 'video', 'audio' or 'object' HTML element instance
- *        to which this JitsiTrack is currently attached to.
+ * Removes this JitsiTrack from the passed HTML container.
+ *
+ * @param container the HTML container to detach from this JitsiTrack. If
+ * <tt>null</tt> or <tt>undefined</tt>, all containers are removed. A container
+ * can be a 'video', 'audio' or 'object' HTML element instance to which this
+ * JitsiTrack is currently attached.
  */
-JitsiTrack.prototype.detach = function (container) {
-    for(var i = 0; i < this.containers.length; i++)
-    {
-        if(!container)
-        {
-            RTCUtils.setVideoSrc(this.containers[i], null);
+JitsiTrack.prototype.detach = function(container) {
+    for (let cs = this.containers, i = cs.length - 1; i >= 0; --i) {
+        const c = cs[i];
+
+        if (!container) {
+            RTCUtils.attachMediaStream(c, null);
         }
-        if(!container || $(this.containers[i]).is($(container)))
-        {
-            this.containers.splice(i,1);
+        if (!container || c === container) {
+            cs.splice(i, 1);
         }
     }
 
-    if(container) {
-        RTCUtils.setVideoSrc(container, null);
+    if (container) {
+        RTCUtils.attachMediaStream(container, null);
     }
 };
 
 /**
- * Dispose sending the media track. And removes it from the HTML.
- * NOTE: Works for local tracks only.
+ * Attach time to first media tracker only if there is conference and only
+ * for the first element.
+ * @param container the HTML container which can be 'video' or 'audio' element.
+ *        It can also be 'object' element if Temasys plugin is in use and this
+ *        method has been called previously on video or audio HTML element.
+ * @private
  */
-JitsiTrack.prototype.dispose = function () {
+// eslint-disable-next-line no-unused-vars
+JitsiTrack.prototype._attachTTFMTracker = function(container) {
+    // Should be defined by the classes that are extending JitsiTrack
+};
+
+/**
+ * Removes attached event listeners.
+ *
+ * @returns {Promise}
+ */
+JitsiTrack.prototype.dispose = function() {
+    this.eventEmitter.removeAllListeners();
+
+    this.disposed = true;
+
+    return Promise.resolve();
 };
 
 /**
@@ -227,39 +321,35 @@ JitsiTrack.prototype.dispose = function () {
  * screen capture as opposed to a camera.
  */
 JitsiTrack.prototype.isScreenSharing = function() {
-};
-
-/**
- * FIXME remove hack in SDP.js and this method
- * Returns id of the track.
- * @returns {string|null} id of the track or null if this is fake track.
- */
-JitsiTrack.prototype._getId = function () {
-    return this.getTrackId();
+    // FIXME: Should be fixed or removed.
 };
 
 /**
  * Returns id of the track.
  * @returns {string|null} id of the track or null if this is fake track.
  */
-JitsiTrack.prototype.getId = function () {
-    if(this.stream)
+JitsiTrack.prototype.getId = function() {
+    if (this.stream) {
         return RTCUtils.getStreamID(this.stream);
-    else
-        return null;
+    }
+
+    return null;
+
 };
 
 /**
- * Checks whether the MediaStream is avtive/not ended.
+ * Checks whether the MediaStream is active/not ended.
  * When there is no check for active we don't have information and so
  * will return that stream is active (in case of FF).
  * @returns {boolean} whether MediaStream is active.
  */
-JitsiTrack.prototype.isActive = function () {
-    if(typeof this.stream.active !== "undefined")
+JitsiTrack.prototype.isActive = function() {
+    if (typeof this.stream.active !== 'undefined') {
         return this.stream.active;
-    else
-        return true;
+    }
+
+    return true;
+
 };
 
 /**
@@ -268,9 +358,10 @@ JitsiTrack.prototype.isActive = function () {
  * @param eventId the event ID.
  * @param handler handler for the event.
  */
-JitsiTrack.prototype.on = function (eventId, handler) {
-    if(this.eventEmitter)
+JitsiTrack.prototype.on = function(eventId, handler) {
+    if (this.eventEmitter) {
         this.eventEmitter.on(eventId, handler);
+    }
 };
 
 /**
@@ -278,9 +369,10 @@ JitsiTrack.prototype.on = function (eventId, handler) {
  * @param eventId the event ID.
  * @param [handler] optional, the specific handler to unbind
  */
-JitsiTrack.prototype.off = function (eventId, handler) {
-    if(this.eventEmitter)
+JitsiTrack.prototype.off = function(eventId, handler) {
+    if (this.eventEmitter) {
         this.eventEmitter.removeListener(eventId, handler);
+    }
 };
 
 // Common aliases for event emitter
@@ -289,24 +381,32 @@ JitsiTrack.prototype.removeEventListener = JitsiTrack.prototype.off;
 
 /**
  * Sets the audio level for the stream
- * @param audioLevel the new audio level
+ * @param {number} audioLevel value between 0 and 1
+ * @param {TraceablePeerConnection} [tpc] the peerconnection instance which
+ * is source for the audio level. It can be <tt>undefined</tt> for
+ * a local track if the audio level was measured outside of the peerconnection
+ * (see /modules/statistics/LocalStatsCollector.js).
  */
-JitsiTrack.prototype.setAudioLevel = function (audioLevel) {
-    if(this.audioLevel !== audioLevel) {
-        this.eventEmitter.emit(JitsiTrackEvents.TRACK_AUDIO_LEVEL_CHANGED,
-            audioLevel);
+JitsiTrack.prototype.setAudioLevel = function(audioLevel, tpc) {
+    if (this.audioLevel !== audioLevel) {
         this.audioLevel = audioLevel;
+        this.eventEmitter.emit(
+            JitsiTrackEvents.TRACK_AUDIO_LEVEL_CHANGED,
+            audioLevel,
+            tpc);
     }
- };
+};
 
 /**
  * Returns the msid of the stream attached to the JitsiTrack object or null if
  * no stream is attached.
  */
-JitsiTrack.prototype.getMSID = function () {
-    var streamId = this.getStreamId();
-    var trackId = this.getTrackId();
-    return (streamId && trackId) ? (streamId + " " + trackId) : null;
+JitsiTrack.prototype.getMSID = function() {
+    const streamId = this.getStreamId();
+    const trackId = this.getTrackId();
+
+
+    return streamId && trackId ? `${streamId} ${trackId}` : null;
 };
 
 /**
@@ -317,8 +417,8 @@ JitsiTrack.prototype.getMSID = function () {
  * @emits JitsiTrackEvents.TRACK_AUDIO_OUTPUT_CHANGED
  * @returns {Promise}
  */
-JitsiTrack.prototype.setAudioOutput = function (audioOutputDeviceId) {
-    var self = this;
+JitsiTrack.prototype.setAudioOutput = function(audioOutputDeviceId) {
+    const self = this;
 
     if (!RTCUtils.isDeviceChangeAvailable('output')) {
         return Promise.reject(
@@ -331,20 +431,23 @@ JitsiTrack.prototype.setAudioOutput = function (audioOutputDeviceId) {
         return Promise.resolve();
     }
 
-    return Promise.all(this.containers.map(function(element) {
-        return element.setSinkId(audioOutputDeviceId)
-            .catch(function (error) {
-                logger.warn(
-                    'Failed to change audio output device on element. Default' +
-                    ' or previously set audio output device will be used.',
-                    element, error);
-                throw error;
-            });
-    }))
-    .then(function () {
-        self.eventEmitter.emit(JitsiTrackEvents.TRACK_AUDIO_OUTPUT_CHANGED,
-            audioOutputDeviceId);
-    });
+    return (
+        Promise.all(
+                this.containers.map(
+                    element =>
+                        element.setSinkId(audioOutputDeviceId)
+                            .catch(error => {
+                                logger.warn(
+                                    'Failed to change audio output device on'
+                                        + ' element. Default or previously set'
+                                        + ' audio output device will be used.',
+                                    element,
+                                    error);
+                                throw error;
+                            })))
+            .then(() => {
+                self.eventEmitter.emit(
+                    JitsiTrackEvents.TRACK_AUDIO_OUTPUT_CHANGED,
+                    audioOutputDeviceId);
+            }));
 };
-
-module.exports = JitsiTrack;

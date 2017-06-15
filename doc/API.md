@@ -39,17 +39,23 @@ You can access the following methods and objects trough ```JitsiMeetJS``` object
 *  ```JitsiMeetJS.init(options)``` - this method initialized Jitsi Meet API.
 The ```options``` parameter is JS object with the following properties:
     1. useIPv6 - boolean property
-    2. desktopSharingChromeMethod - Desktop sharing method. Can be set to 'ext', 'webrtc' or false to disable.
-    3. desktopSharingChromeExtId - The ID of the jidesha extension for Chrome or Firefox. Example: 'mbocklcggfhnbahlnepmldehdhpjfcjp'
-    desktopSharingChromeSources - Array of strings with the media sources to use when using screen sharing with the Chrome extension. Example: ['screen', 'window']
-    4. desktopSharingChromeMinExtVersion - Required version of Chrome extension. Example: '0.1'
-    5. desktopSharingFirefoxExtId - The ID of the jidesha extension for Firefox. If null, we assume that no extension is required.
-    6. desktopSharingFirefoxDisabled - Boolean. Whether desktop sharing should be disabled on Firefox. Example: false.
-    7. desktopSharingFirefoxMaxVersionExtRequired - The maximum version of Firefox which requires a jidesha extension. Example: if set to 41, we will require the extension for Firefox versions up to and including 41. On Firefox 42 and higher, we will run without the extension. If set to -1, an extension will be required for all versions of Firefox.
-    8. desktopSharingFirefoxExtensionURL - The URL to the Firefox extension for desktop sharing. "null" if no extension is required.
-    9. disableAudioLevels - boolean property. Enables/disables audio levels.
-    10. disableSimulcast - boolean property. Enables/disables simulcast.
-    11. enableWindowOnErrorHandler - boolean property (default false). Enables/disables attaching global onerror handler (window.onerror).
+    2. desktopSharingChromeExtId - The ID of the jidesha extension for Chrome. Example: 'mbocklcggfhnbahlnepmldehdhpjfcjp'
+    3. desktopSharingChromeDisabled - Boolean. Whether desktop sharing should be disabled on Chrome. Example: false.
+    4. desktopSharingChromeSources - Array of strings with the media sources to use when using screen sharing with the Chrome extension. Example: ['screen', 'window']
+    5. desktopSharingChromeMinExtVersion - Required version of Chrome extension. Example: '0.1'
+    6. desktopSharingFirefoxExtId - The ID of the jidesha extension for Firefox. If null, we assume that no extension is required.
+    7. desktopSharingFirefoxDisabled - Boolean. Whether desktop sharing should be disabled on Firefox. Example: false.
+    8. desktopSharingFirefoxMaxVersionExtRequired - The maximum version of Firefox which requires a jidesha extension. Example: if set to 41, we will require the extension for Firefox versions up to and including 41. On Firefox 42 and higher, we will run without the extension. If set to -1, an extension will be required for all versions of Firefox.
+    9. desktopSharingFirefoxExtensionURL - The URL to the Firefox extension for desktop sharing. "null" if no extension is required.
+    10. disableAudioLevels - boolean property. Enables/disables audio levels.
+    11. disableSimulcast - boolean property. Enables/disables simulcast.
+    12. enableWindowOnErrorHandler - boolean property (default false). Enables/disables attaching global onerror handler (window.onerror).
+    13. disableThirdPartyRequests - if true - callstats will be disabled and the callstats API won't be included.
+    14. enableAnalyticsLogging - boolean property (default false). Enables/disables analytics logging.
+    15. callStatsCustomScriptUrl - (optional) custom url to access callstats client script
+    16. callStatsConfIDNamespace - (optional) a namespace to prepend the callstats conference ID with. Defaults to the window.location.hostname
+    17. disableRtx - (optional) boolean property (default to false).  Enables/disable the use of RTX.
+    18. preferH264 - (optional) boolean property (default to false).  Enables/disable preferring the first instance of an h264 codec in an offer by moving it to the front of the codec list.
 
 * ```JitsiMeetJS.JitsiConnection``` - the ```JitsiConnection``` constructor. You can use that to create new server connection.
 
@@ -58,7 +64,7 @@ The ```options``` parameter is JS object with the following properties:
 JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
 ```
 
-* ```JitsiMeetJS.createLocalTracks(options)``` - Creates the media tracks and returns them trough ```Promise``` object. If rejected, passes ```JitsiTrackError``` instance to catch block.
+* ```JitsiMeetJS.createLocalTracks(options, firePermissionPromptIsShownEvent)``` - Creates the media tracks and returns them trough ```Promise``` object. If rejected, passes ```JitsiTrackError``` instance to catch block.
     - options - JS object with configuration options for the local media tracks. You can change the following properties there:
         1. devices - array with the devices - "desktop", "video" and "audio" that will be passed to GUM. If that property is not set GUM will try to get all available devices.
         2. resolution - the prefered resolution for the local video.
@@ -66,6 +72,8 @@ JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
         4. micDeviceId - the deviceID for the audio device that is going to be used
         5. minFps - the minimum frame rate for the video stream (passed to GUM)
         6. maxFps - the maximum frame rate for the video stream (passed to GUM)
+        7. facingMode - facing mode for a camera (possible values - 'user', 'environment')
+    - firePermissionPromptIsShownEvent - optional boolean parameter. If set to ```true```, ```JitsiMediaDevicesEvents.PERMISSION_PROMPT_IS_SHOWN``` will be fired when browser shows gUM permission prompt.
 
 * ```JitsiMeetJS.enumerateDevices(callback)``` - __DEPRECATED__. Use ```JitsiMeetJS.mediaDevices.enumerateDevices(callback)``` instead.
 * ```JitsiMeetJS.isDeviceListAvailable()``` - __DEPRECATED__. Use ```JitsiMeetJS.mediaDevices.isDeviceListAvailable()``` instead.
@@ -87,7 +95,6 @@ JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
     - ```addEventListener(event, handler)``` - attaches an event handler.
     - ```removeEventListener(event, handler)``` - removes an event handler.
 
-
 * ```JitsiMeetJS.events``` - JS object that contains all events used by the API. You will need that JS object when you try to subscribe for connection or conference events.
     We have two event types - connection and conference. You can access the events with the following code ```JitsiMeetJS.events.<event_type>.<event_name>```.
     For example if you want to use the conference event that is fired when somebody leave conference you can use the following code - ```JitsiMeetJS.events.conference.USER_LEFT```.
@@ -102,8 +109,7 @@ JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
         - MESSAGE_RECEIVED - new text message received. (parameters - id(string), text(string), ts(number))
         - DISPLAY_NAME_CHANGED - user has changed his display name. (parameters - id(string), displayName(string))
         - SUBJECT_CHANGED - notifies that subject of the conference has changed (parameters - subject(string))
-        - LAST_N_ENDPOINTS_CHANGED - last n set was changed (parameters - array of ids of users)
-        - IN_LAST_N_CHANGED - passes boolean property that shows whether the local user is included in last n set of any other user or not. (parameters - boolean)
+        - LAST_N_ENDPOINTS_CHANGED - last n set was changed (parameters - leavingEndpointIds(array) ids of users leaving lastN, enteringEndpointIds(array) ids of users entering lastN)
         - CONFERENCE_JOINED - notifies the local user that he joined the conference successfully. (no parameters)
         - CONFERENCE_LEFT - notifies the local user that he left the conference successfully. (no parameters)
         - DTMF_SUPPORT_CHANGED - notifies if at least one user supports DTMF. (parameters - supports(boolean))
@@ -116,7 +122,10 @@ JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
         - STARTED_MUTED - notifies that the local user has started muted
         - AVAILABLE_DEVICES_CHANGED - notifies that available participant devices changed (camera or microphone was added or removed) (parameters - id(string), devices(JS object with 2 properties - audio(boolean), video(boolean)))
         - CONNECTION_STATS - New local connection statistics are received. (parameters - stats(object))
+        - BEFORE_STATISTICS_DISPOSED - fired just before the statistics module is disposed and it's the last chance to submit some logs to the statistics service, before it gets disconnected
         - AUTH_STATUS_CHANGED - notifies that authentication is enabled or disabled, or local user authenticated (logged in). (parameters - isAuthEnabled(boolean), authIdentity(string))
+        - ENDPOINT_MESSAGE_RECEIVED - notifies that a new message
+        from another participant is received on a data channel.
 
     2. connection
         - CONNECTION_FAILED - indicates that the server connection failed.
@@ -131,6 +140,7 @@ JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
 
     4. mediaDevices
         - DEVICE_LIST_CHANGED - indicates that list of currently connected devices has changed (parameters - devices(MediaDeviceInfo[])).
+        - PERMISSION_PROMPT_IS_SHOWN - Indicates that the environment is currently showing permission prompt to access camera and/or microphone (parameters - environmentType ('chrome'|'opera'|'firefox'|'iexplorer'|'safari'|'nwjs'|'react-native'|'android').
 
 
 * ```JitsiMeetJS.errors``` - JS object that contains all errors used by the API. You can use that object to check the reported errors from the API
@@ -163,12 +173,16 @@ JitsiMeetJS.setLogLevel(JitsiMeetJS.logLevels.ERROR);
         - NOT_FOUND - getUserMedia-related error, indicates that requested device was not found.
         - CONSTRAINT_FAILED - getUserMedia-related error, indicates that some of requested constraints in getUserMedia call were not satisfied.
         - TRACK_IS_DISPOSED - an error which indicates that track has been already disposed and cannot be longer used.
+        - TRACK_NO_STREAM_FOUND - an error which indicates that track has no MediaStream associated.
         - TRACK_MUTE_UNMUTE_IN_PROGRESS - an error which indicates that track is currently in progress of muting or unmuting itself.
         - CHROME_EXTENSION_GENERIC_ERROR - generic error for jidesha extension for Chrome.
         - CHROME_EXTENSION_USER_CANCELED - an error which indicates that user canceled screen sharing window selection dialog in jidesha extension for Chrome.
         - CHROME_EXTENSION_INSTALLATION_ERROR - an error which indicates that the jidesha extension for Chrome is failed to install.
         - FIREFOX_EXTENSION_NEEDED - An error which indicates that the jidesha extension for Firefox is needed to proceed with screen sharing, and that it is not installed.
-        
+
+* ```JitsiMeetJS.errorTypes``` - constructors for Error instances that can be produced by library. Are useful for checks like ```error instanceof JitsiMeetJS.errorTypes.JitsiTrackError```. Following Errors are available:
+    1. ```JitsiTrackError``` - Error that happened to a JitsiTrack.
+
 * ```JitsiMeetJS.logLevels``` - object with the log levels:
     1. TRACE
     2. DEBUG
@@ -193,6 +207,7 @@ This objects represents the server connection. You can create new ```JitsiConnec
             - muc
             - anonymousdomain
         3. useStunTurn -
+        4. enableLipSync - (optional) boolean property which enables the lipsync feature. Currently works only in Chrome and is enabled by default.
 
 2. connect(options) - establish server connection
     - options - JS Object with ```id``` and ```password``` properties.
@@ -207,8 +222,8 @@ This objects represents the server connection. You can create new ```JitsiConnec
         3. jirecon
         4. callStatsID - callstats credentials
         5. callStatsSecret - callstats credentials
-        6. disableThirdPartyRequests - if true - callstats will be disabled and
-        the callstats API won't be included.
+        6. enableTalkWhileMuted - boolean property. Enables/disables talk while muted detection, by default the value is false/disabled.
+        7. ignoreStartMuted - ignores start muted events coming from jicofo. 
         **NOTE: if 4 and 5 are set the library is going to send events to callstats. Otherwise the callstats integration will be disabled.**
 
 5. addEventListener(event, listener) - Subscribes the passed listener to the event.
@@ -219,6 +234,14 @@ This objects represents the server connection. You can create new ```JitsiConnec
     - event - the event
     - listener - the listener that will be removed.
 
+7. addFeature - Adds new feature to the list of supported features for the local participant
+    - feature - string, the name of the feature
+    - submit - boolean, default false, if true - the new list of features will be immediately submitted to the others.
+
+8. removeFeature - Removes a feature from the list of supported features for the local participant
+    - feature - string, the name of the feature
+    - submit - boolean, default false, if true - the new list of features will be immediately submitted to the others.
+
 JitsiConference
 -----------
 The object represents a conference. We have the following methods to control the conference:
@@ -228,6 +251,8 @@ The object represents a conference. We have the following methods to control the
     - password - string of the password. This parameter is not mandatory.
 
 2. leave() - leaves the conference. Returns Promise.
+
+3. myUserId() - get local user ID.
 
 4. getLocalTracks() - Returns array with JitsiTrack objects for the local streams.
 
@@ -336,6 +361,27 @@ The object represents a conference. We have the following methods to control the
 
     Note: available only for moderator
 
+31. sendEndpointMessage(to, payload) - Sends message via the data channels.
+    - to - the id of the endpoint that should receive the message. If "" the message will be sent to all participants.
+    - payload - JSON object - the payload of the message.
+
+Throws NetworkError or InvalidStateError or Error if the operation fails.
+
+32. broadcastEndpointMessage(payload) - Sends broadcast message via the datachannels.
+    - payload - JSON object - the payload of the message.
+
+Throws NetworkError or InvalidStateError or Error if the operation fails.
+
+33. selectParticipant(participantId) - Elects the participant with the given id to be the selected participant in order to receive higher video quality (if simulcast is enabled).
+    - participantId - the identifier of the participant
+
+Throws NetworkError or InvalidStateError or Error if the operation fails.
+
+34. pinParticipant(participantId) - Elects the participant with the given id to be the pinned participant in order to always receive video for this participant (even when last n is enabled).
+    - participantId - the identifier of the participant
+
+Throws NetworkError or InvalidStateError or Error if the operation fails.
+
 JitsiTrack
 ======
 The object represents single track - video or audio. They can be remote tracks ( from the other participants in the call) or local tracks (from the devices of the local participant).
@@ -376,7 +422,7 @@ We have the following methods for controling the tracks:
 
 JitsiTrackError
 ======
-The object represents error that happened to a JitsiTrack. Is inherited from JavaScript base ```Error``` object, 
+The object represents error that happened to a JitsiTrack. Is inherited from JavaScript base ```Error``` object,
 so ```"name"```, ```"message"``` and ```"stack"``` properties are available. For GUM-related errors,
 exposes additional ```"gum"``` property, which is an object with following properties:
  - error - original GUM error
