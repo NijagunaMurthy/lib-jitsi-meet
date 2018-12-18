@@ -1,11 +1,15 @@
-/* global $, $iq, Promise, Strophe */
+/* global $, Promise */
 
 const logger = require('jitsi-meet-logger').getLogger(__filename);
+
+import { $iq, Strophe } from 'strophe.js';
+
 const XMPPEvents = require('../../service/xmpp/XMPPEvents');
 const AuthenticationEvents
     = require('../../service/authentication/AuthenticationEvents');
 const GlobalOnErrorHandler = require('../util/GlobalOnErrorHandler');
 
+import browser from '../browser';
 import Settings from '../settings/Settings';
 
 /**
@@ -76,7 +80,7 @@ export default function Moderator(roomName, xmpp, emitter, options) {
 
                 return;
             }
-            Settings.setSessionId(event.data.sessionId);
+            Settings.sessionId = event.data.sessionId;
 
             // After popup is closed we will authenticate
         }
@@ -141,8 +145,9 @@ Moderator.prototype.createConferenceIq = function() {
         type: 'set' });
 
     // Session Id used for authentication
-    const sessionId = Settings.getSessionId();
-    const machineUID = Settings.getMachineId();
+    const { sessionId } = Settings;
+    const machineUID = Settings.machineId;
+    const config = this.options.conference;
 
     logger.info(`Session ID: ${sessionId} machine UID: ${machineUID}`);
 
@@ -172,51 +177,101 @@ Moderator.prototype.createConferenceIq = function() {
                 value: this.options.connection.hosts.call_control
             }).up();
     }
-    if (this.options.conference.channelLastN !== undefined) {
+    if (config.channelLastN !== undefined) {
         elem.c(
             'property', {
                 name: 'channelLastN',
-                value: this.options.conference.channelLastN
+                value: config.channelLastN
             }).up();
     }
     elem.c(
         'property', {
             name: 'disableRtx',
-            value: Boolean(this.options.conference.disableRtx)
+            value: Boolean(config.disableRtx)
         }).up();
+
+    if (config.enableTcc !== undefined) {
+        elem.c(
+                'property', {
+                    name: 'enableTcc',
+                    value: Boolean(config.enableTcc)
+                }).up();
+    }
+    if (config.enableRemb !== undefined) {
+        elem.c(
+                'property', {
+                    name: 'enableRemb',
+                    value: Boolean(config.enableRemb)
+                }).up();
+    }
+    if (config.minParticipants !== undefined) {
+        elem.c(
+                'property', {
+                    name: 'minParticipants',
+                    value: config.minParticipants
+                }).up();
+    }
+
     elem.c(
         'property', {
             name: 'enableLipSync',
             value: this.options.connection.enableLipSync !== false
         }).up();
-    if (this.options.conference.audioPacketDelay !== undefined) {
+    if (config.audioPacketDelay !== undefined) {
         elem.c(
             'property', {
                 name: 'audioPacketDelay',
-                value: this.options.conference.audioPacketDelay
+                value: config.audioPacketDelay
             }).up();
     }
-    if (this.options.conference.startBitrate) {
+    if (config.startBitrate) {
         elem.c(
             'property', {
                 name: 'startBitrate',
-                value: this.options.conference.startBitrate
+                value: config.startBitrate
             }).up();
     }
-    if (this.options.conference.minBitrate) {
+    if (config.minBitrate) {
         elem.c(
             'property', {
                 name: 'minBitrate',
-                value: this.options.conference.minBitrate
+                value: config.minBitrate
             }).up();
     }
-    if (this.options.conference.openSctp !== undefined) {
-        elem.c(
-            'property', {
-                name: 'openSctp',
-                value: this.options.conference.openSctp
-            }).up();
+    if (config.testing && config.testing.octo
+        && typeof config.testing.octo.probability === 'number') {
+        if (Math.random() < config.testing.octo.probability) {
+            elem.c(
+                'property', {
+                    name: 'octo',
+                    value: true
+                }).up();
+        }
     }
+
+    let openSctp;
+
+    switch (this.options.conference.openBridgeChannel) {
+    case 'datachannel':
+    case true:
+    case undefined:
+        openSctp = true;
+        break;
+    case 'websocket':
+        openSctp = false;
+        break;
+    }
+
+    if (openSctp && !browser.supportsDataChannels()) {
+        openSctp = false;
+    }
+
+    elem.c(
+        'property', {
+            name: 'openSctp',
+            value: openSctp
+        }).up();
+
     if (this.options.conference.startAudioMuted !== undefined) {
         elem.c(
             'property', {
@@ -257,7 +312,7 @@ Moderator.prototype.parseSessionId = function(resultIq) {
 
     if (sessionId) {
         logger.info(`Received sessionId:  ${sessionId}`);
-        Settings.setSessionId(sessionId);
+        Settings.sessionId = sessionId;
     }
 };
 
@@ -273,7 +328,7 @@ Moderator.prototype.parseConfigOptions = function(resultIq) {
     logger.info(`Authentication enabled: ${authenticationEnabled}`);
 
     this.externalAuthEnabled = $(resultIq).find(
-            '>conference>property'
+        '>conference>property'
             + '[name=\'externalAuth\'][value=\'true\']').length > 0;
 
     logger.info(
@@ -338,11 +393,13 @@ Moderator.prototype.allocateConferenceFocus = function(callback) {
 Moderator.prototype._allocateConferenceFocusError = function(error, callback) {
     // If the session is invalid, remove and try again without session ID to get
     // a new one
-    const invalidSession = $(error).find('>error>session-invalid').length;
+    const invalidSession
+        = $(error).find('>error>session-invalid').length
+            || $(error).find('>error>not-acceptable').length;
 
     if (invalidSession) {
         logger.info('Session expired! - removing');
-        Settings.clearSessionId();
+        Settings.sessionId = undefined;
     }
     if ($(error).find('>error>graceful-shutdown').length) {
         this.eventEmitter.emit(XMPPEvents.GRACEFUL_SHUTDOWN);
@@ -363,7 +420,9 @@ Moderator.prototype._allocateConferenceFocusError = function(error, callback) {
             errorMsg = errorTextNode.text();
         }
         this.eventEmitter.emit(
-                XMPPEvents.RESERVATION_ERROR, errorCode, errorMsg);
+            XMPPEvents.RESERVATION_ERROR,
+            errorCode,
+            errorMsg);
 
         return;
     }
@@ -397,7 +456,9 @@ Moderator.prototype._allocateConferenceFocusError = function(error, callback) {
 
     if (!invalidSession) {
         this.eventEmitter.emit(
-                XMPPEvents.FOCUS_DISCONNECTED, focusComponent, retrySec);
+            XMPPEvents.FOCUS_DISCONNECTED,
+            focusComponent,
+            retrySec);
     }
 
     // Reset response timeout
@@ -446,12 +507,13 @@ Moderator.prototype.authenticate = function() {
             result => {
                 this.parseSessionId(result);
                 resolve();
-            }, error => {
-                // eslint-disable-next-line newline-per-chained-call
-                const code = $(error).find('>error').attr('code');
-
-                reject(error, code);
-            }
+            },
+            errorIq => reject({
+                error: $(errorIq).find('iq>error :first')
+                    .prop('tagName'),
+                message: $(errorIq).find('iq>error>text')
+                    .text()
+            })
         );
     });
 };
@@ -473,7 +535,7 @@ Moderator.prototype._getLoginUrl = function(popup, urlCb, failureCb) {
     const attrs = {
         xmlns: 'http://jitsi.org/protocol/focus',
         room: this.roomName,
-        'machine-uid': Settings.getMachineId()
+        'machine-uid': Settings.machineId
     };
     let str = 'auth url'; // for logger
 
@@ -520,7 +582,7 @@ Moderator.prototype.getPopupLoginUrl = function(urlCallback, failureCallback) {
 Moderator.prototype.logout = function(callback) {
     const iq = $iq({ to: this.getFocusComponent(),
         type: 'set' });
-    const sessionId = Settings.getSessionId();
+    const { sessionId } = Settings;
 
     if (!sessionId) {
         callback();
@@ -541,7 +603,7 @@ Moderator.prototype.logout = function(callback) {
                 logoutUrl = decodeURIComponent(logoutUrl);
             }
             logger.info(`Log out OK, url: ${logoutUrl}`, result);
-            Settings.clearSessionId();
+            Settings.sessionId = undefined;
             callback(logoutUrl);
         },
         error => {

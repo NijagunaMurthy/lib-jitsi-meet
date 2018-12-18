@@ -55,7 +55,7 @@ export default class LocalSdpMunger {
         const videoMLine = transformer.selectMedia('video');
 
         if (!videoMLine) {
-            logger.error(
+            logger.debug(
                 `${this.tpc} unable to hack local video track SDP`
                     + '- no "video" media');
 
@@ -65,19 +65,24 @@ export default class LocalSdpMunger {
         let modified = false;
 
         for (const videoTrack of localVideos) {
-            const isMuted = videoTrack.isMuted();
-            const muteInProgress = videoTrack.inMuteOrUnmuteProgress;
-            const shouldFakeSdp = isMuted || muteInProgress;
+            const muted = videoTrack.isMuted();
+            const mediaStream = videoTrack.getOriginalStream();
+
+            // During the mute/unmute operation there are periods of time when
+            // the track's underlying MediaStream is not added yet to
+            // the PeerConnection. The SDP needs to be munged in such case.
+            const isInPeerConnection
+                = mediaStream && this.tpc.isMediaStreamInPc(mediaStream);
+            const shouldFakeSdp = muted || !isInPeerConnection;
 
             logger.debug(
-                `${this.tpc} ${videoTrack
-                 } isMuted: ${isMuted
-                 }, is mute in progress: ${muteInProgress
-                 } => should fake sdp ? : ${shouldFakeSdp}`);
+                `${this.tpc} ${videoTrack} muted: ${
+                    muted}, is in PeerConnection: ${
+                    isInPeerConnection} => should fake sdp ? : ${
+                    shouldFakeSdp}`);
 
             if (!shouldFakeSdp) {
-                // eslint-disable-next-line no-continue
-                continue;
+                continue; // eslint-disable-line no-continue
             }
 
             // Inject removed SSRCs
@@ -90,8 +95,7 @@ export default class LocalSdpMunger {
                 logger.error(
                     `No SSRCs stored for: ${videoTrack} in ${this.tpc}`);
 
-                // eslint-disable-next-line no-continue
-                continue;
+                continue; // eslint-disable-line no-continue
             }
 
             modified = true;
@@ -99,18 +103,16 @@ export default class LocalSdpMunger {
             // We need to fake sendrecv.
             // NOTE the SDP produced here goes only to Jicofo and is never set
             // as localDescription. That's why
-            // {@link TraceablePeerConnection.mediaTransferActive} is ignored
-            // here.
+            // TraceablePeerConnection.mediaTransferActive is ignored here.
             videoMLine.direction = 'sendrecv';
 
             // Check if the recvonly has MSID
             const primarySSRC = requiredSSRCs[0];
 
-            // FIXME the cname could come from the stream, but may
-            // turn out to be too complex. It is fine to come up
-            // with any value, as long as we only care about
-            // the actual SSRC values when deciding whether or not
-            // an update should be sent
+            // FIXME The cname could come from the stream, but may turn out to
+            // be too complex. It is fine to come up with any value, as long as
+            // we only care about the actual SSRC values when deciding whether
+            // or not an update should be sent.
             const primaryCname = `injected-${primarySSRC}`;
 
             for (const ssrcNum of requiredSSRCs) {
@@ -119,8 +121,8 @@ export default class LocalSdpMunger {
 
                 // Inject
                 logger.debug(
-                    `${this.tpc} injecting video SSRC: `
-                        + `${ssrcNum} for ${videoTrack}`);
+                    `${this.tpc} injecting video SSRC: ${ssrcNum} for ${
+                        videoTrack}`);
                 videoMLine.addSSRCAttribute({
                     id: ssrcNum,
                     attribute: 'cname',
@@ -160,26 +162,109 @@ export default class LocalSdpMunger {
     }
 
     /**
+     * Modifies 'cname', 'msid', 'label' and 'mslabel' by appending
+     * the id of {@link LocalSdpMunger#tpc} at the end, preceding by a dash
+     * sign.
+     *
+     * @param {MLineWrap} mediaSection - The media part (audio or video) of the
+     * session description which will be modified in place.
+     * @returns {void}
+     * @private
+     */
+    _transformMediaIdentifiers(mediaSection) {
+        const pcId = this.tpc.id;
+
+        for (const ssrcLine of mediaSection.ssrcs) {
+            switch (ssrcLine.attribute) {
+            case 'cname':
+            case 'label':
+            case 'mslabel':
+                ssrcLine.value = ssrcLine.value && `${ssrcLine.value}-${pcId}`;
+                break;
+            case 'msid': {
+                if (ssrcLine.value) {
+                    const streamAndTrackIDs = ssrcLine.value.split(' ');
+
+                    if (streamAndTrackIDs.length === 2) {
+                        const streamId = streamAndTrackIDs[0];
+                        const trackId = streamAndTrackIDs[1];
+
+                        ssrcLine.value
+                            = `${streamId}-${pcId} ${trackId}-${pcId}`;
+                    } else {
+                        logger.warn(
+                            'Unable to munge local MSID'
+                                + `- weird format detected: ${ssrcLine.value}`);
+                    }
+                }
+                break;
+            }
+            }
+        }
+    }
+
+    /**
      * Maybe modifies local description to fake local video tracks SDP when
      * those are muted.
      *
      * @param {object} desc the WebRTC SDP object instance for the local
      * description.
+     * @returns {RTCSessionDescription}
      */
-    maybeMungeLocalSdp(desc) {
-        // Nothing to be done in early stage when localDescription
-        // is not available yet
-        if (!desc || !desc.sdp) {
-            return;
+    maybeAddMutedLocalVideoTracksToSDP(desc) {
+        if (!desc) {
+            throw new Error('No local description passed in.');
         }
 
         const transformer = new SdpTransformWrap(desc.sdp);
 
         if (this._addMutedLocalVideoTracksToSDP(transformer)) {
-            // Write
-            desc.sdp = transformer.toRawSDP();
-
-            // logger.info("Post TRANSFORM: ", desc.sdp);
+            return new RTCSessionDescription({
+                type: desc.type,
+                sdp: transformer.toRawSDP()
+            });
         }
+
+        return desc;
+    }
+
+    /**
+     * This transformation will make sure that stream identifiers are unique
+     * across all of the local PeerConnections even if the same stream is used
+     * by multiple instances at the same time.
+     * Each PeerConnection assigns different SSRCs to the same local
+     * MediaStream, but the MSID remains the same as it's used to identify
+     * the stream by the WebRTC backend. The transformation will append
+     * {@link TraceablePeerConnection#id} at the end of each stream's identifier
+     * ("cname", "msid", "label" and "mslabel").
+     *
+     * @param {RTCSessionDescription} sessionDesc - The local session
+     * description (this instance remains unchanged).
+     * @return {RTCSessionDescription} - Transformed local session description
+     * (a modified copy of the one given as the input).
+     */
+    transformStreamIdentifiers(sessionDesc) {
+        // FIXME similar check is probably duplicated in all other transformers
+        if (!sessionDesc || !sessionDesc.sdp || !sessionDesc.type) {
+            return sessionDesc;
+        }
+
+        const transformer = new SdpTransformWrap(sessionDesc.sdp);
+        const audioMLine = transformer.selectMedia('audio');
+
+        if (audioMLine) {
+            this._transformMediaIdentifiers(audioMLine);
+        }
+
+        const videoMLine = transformer.selectMedia('video');
+
+        if (videoMLine) {
+            this._transformMediaIdentifiers(videoMLine);
+        }
+
+        return new RTCSessionDescription({
+            type: sessionDesc.type,
+            sdp: transformer.toRawSDP()
+        });
     }
 }

@@ -1,4 +1,7 @@
-/* global $, b64_sha1, Strophe */
+/* global $ */
+
+import { b64_sha1, Strophe } from 'strophe.js'; // eslint-disable-line camelcase
+
 import XMPPEvents from '../../service/xmpp/XMPPEvents';
 import Listenable from '../util/Listenable';
 
@@ -41,7 +44,7 @@ export default class Caps extends Listenable {
         if (!this.disco) {
             throw new Error(
                 'Missing strophe-plugins '
-                + '(disco and caps plugins are required)!');
+                + '(disco plugin is required)!');
         }
 
         this.versionToCapabilities = Object.create(null);
@@ -126,10 +129,8 @@ export default class Caps extends Listenable {
                         .each(
                             (idx, el) => features.add(el.getAttribute('var')));
                     if (user) {
-                            // TODO: Maybe use the version + node + hash
-                            // as keys?
-                        this.versionToCapabilities[user.version]
-                                = features;
+                        // TODO: Maybe use the version + node + hash as keys?
+                        this.versionToCapabilities[user.version] = features;
                     }
                     resolve(features);
                 }, reject, timeout)
@@ -188,21 +189,23 @@ export default class Caps extends Listenable {
      * Generates the value for the "ver" attribute.
      */
     _generateVersion() {
-        const identities = this.disco._identities.sort(compareIdentities);
-        const features = this.disco._features.sort();
+        const identities
+          = this.disco._identities.sort(compareIdentities).reduce(
+              (accumulatedValue, identity) =>
+                  `${
+                      IDENTITY_PROPERTIES.reduce(
+                          (tmp, key, idx) =>
+                              tmp
+                                  + (idx === 0 ? '' : '/')
+                                  + identity[key],
+                          '')
+                  }<`,
+              '');
+        const features
+            = this.disco._features.sort().reduce(
+                (tmp, feature) => `${tmp + feature}<`, '');
 
-        this.version = b64_sha1(
-            identities.reduce(
-                    (accumulatedValue, identity) =>
-                        `${IDENTITY_PROPERTIES.reduce(
-                                (tmp, key, idx) =>
-                                    tmp
-                                        + (idx === 0 ? '' : '/')
-                                        + identity[key],
-                                '')
-                             }<`,
-                    '')
-                + features.reduce((tmp, feature) => `${tmp + feature}<`, ''));
+        this.version = b64_sha1(identities + features);
         this._notifyVersionChanged();
     }
 

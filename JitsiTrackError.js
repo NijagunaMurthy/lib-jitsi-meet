@@ -4,10 +4,12 @@ const TRACK_ERROR_TO_MESSAGE_MAP = {};
 
 TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.UNSUPPORTED_RESOLUTION]
     = 'Video resolution is not supported: ';
-TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.FIREFOX_EXTENSION_NEEDED]
-    = 'Firefox extension is not installed';
 TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.CHROME_EXTENSION_INSTALLATION_ERROR]
     = 'Failed to install Chrome extension';
+TRACK_ERROR_TO_MESSAGE_MAP[
+    JitsiTrackErrors.CHROME_EXTENSION_USER_GESTURE_REQUIRED]
+    = 'Failed to install Chrome extension - installations can only be initiated'
+        + ' by a user gesture.';
 TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.CHROME_EXTENSION_USER_CANCELED]
     = 'User canceled Chrome\'s screen sharing prompt';
 TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.CHROME_EXTENSION_GENERIC_ERROR]
@@ -28,8 +30,6 @@ TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.TRACK_IS_DISPOSED]
     = 'Track has been already disposed';
 TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.TRACK_NO_STREAM_FOUND]
     = 'Track does not have an associated Media Stream';
-TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.TRACK_MUTE_UNMUTE_IN_PROGRESS]
-    = 'Track mute/unmute process is currently in progress';
 TRACK_ERROR_TO_MESSAGE_MAP[JitsiTrackErrors.NO_DATA_FROM_SOURCE]
     = 'The track has stopped receiving data from it\'s source';
 
@@ -72,6 +72,7 @@ function JitsiTrackError(error, options, devices) {
         };
 
         switch (error.name) {
+        case 'NotAllowedError':
         case 'PermissionDeniedError':
         case 'SecurityError':
             this.name = JitsiTrackErrors.PERMISSION_DENIED;
@@ -90,6 +91,9 @@ function JitsiTrackError(error, options, devices) {
         case 'OverconstrainedError': {
             const constraintName = error.constraintName || error.constraint;
 
+            // we treat deviceId as unsupported resolution, as we want to
+            // retry and finally if everything fails to remove deviceId from
+            // mandatory constraints
             if (options
                     && options.video
                     && (!devices || devices.indexOf('video') > -1)
@@ -98,13 +102,14 @@ function JitsiTrackError(error, options, devices) {
                         || constraintName === 'minHeight'
                         || constraintName === 'maxHeight'
                         || constraintName === 'width'
-                        || constraintName === 'height')) {
+                        || constraintName === 'height'
+                        || constraintName === 'deviceId')) {
                 this.name = JitsiTrackErrors.UNSUPPORTED_RESOLUTION;
                 this.message
                     = TRACK_ERROR_TO_MESSAGE_MAP[this.name]
                         + getResolutionFromFailedConstraint(
-                                constraintName,
-                                options);
+                            constraintName,
+                            options);
             } else {
                 this.name = JitsiTrackErrors.CONSTRAINT_FAILED;
                 this.message

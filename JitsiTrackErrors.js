@@ -16,6 +16,16 @@ export const CHROME_EXTENSION_INSTALLATION_ERROR
     = 'gum.chrome_extension_installation_error';
 
 /**
+ * This error indicates that the attempt to start screensharing was initiated by
+ * a script which did not originate in user gesture handler. It means that
+ * you should to trigger the action again in response to a button click for
+ * example.
+ * @type {string}
+ */
+export const CHROME_EXTENSION_USER_GESTURE_REQUIRED
+    = 'gum.chrome_extension_user_gesture_required';
+
+/**
  * An error which indicates that user canceled screen sharing window
  * selection dialog in jidesha extension for Chrome.
  */
@@ -69,12 +79,6 @@ export const PERMISSION_DENIED = 'gum.permission_denied';
  * be longer used.
  */
 export const TRACK_IS_DISPOSED = 'track.track_is_disposed';
-
-/**
- * An error which indicates that track is currently in progress of muting or
- * unmuting itself.
- */
-export const TRACK_MUTE_UNMUTE_IN_PROGRESS = 'track.mute_unmute_inprogress';
 
 /**
  * An error which indicates that track has no MediaStream associated.

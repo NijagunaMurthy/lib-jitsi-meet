@@ -1,14 +1,18 @@
+import EventEmitter from 'events';
+
+import { FEEDBACK } from '../../service/statistics/AnalyticsEvents';
 import analytics from './AnalyticsAdapter';
 import CallStats from './CallStats';
-import JitsiTrackError from '../../JitsiTrackError';
 import LocalStats from './LocalStatsCollector';
 import RTPStats from './RTPStatsCollector';
-import * as StatisticsEvents from '../../service/statistics/Events';
-import Settings from '../settings/Settings';
 
-const EventEmitter = require('events');
+import browser from '../browser';
+import Settings from '../settings/Settings';
+import ScriptUtil from '../util/ScriptUtil';
+import JitsiTrackError from '../../JitsiTrackError';
+import * as StatisticsEvents from '../../service/statistics/Events';
+
 const logger = require('jitsi-meet-logger').getLogger(__filename);
-const ScriptUtil = require('../util/ScriptUtil');
 
 /**
  * Stores all active {@link Statistics} instances.
@@ -30,20 +34,49 @@ let isCallstatsLoaded = false;
  * downloading their API as soon as possible and (2) do the downloading
  * asynchronously.
  *
- * @param customScriptUrl
+ * @param {StatisticsOptions} options - Options to use for downloading and
+ * initializing callstats backend.
  */
-function loadCallStatsAPI(customScriptUrl) {
+function loadCallStatsAPI(options) {
     if (!isCallstatsLoaded) {
         ScriptUtil.loadScript(
-                customScriptUrl ? customScriptUrl
-                    : 'https://api.callstats.io/static/callstats-ws.min.js',
-                /* async */ true,
-                /* prepend */ true);
+            options.customScriptUrl
+                || 'https://api.callstats.io/static/callstats-ws.min.js',
+            /* async */ true,
+            /* prepend */ true,
+            /* relativeURL */ undefined,
+            /* loadCallback */ () => _initCallStatsBackend(options)
+        );
         isCallstatsLoaded = true;
     }
+}
 
-    // FIXME At the time of this writing, we hope that the callstats.io API will
-    // have loaded by the time we needed it (i.e. CallStats.init is invoked).
+/**
+ * Initializes Callstats backend.
+ *
+ * @param {StatisticsOptions} options - The options to use for initializing
+ * callstats backend.
+ * @private
+ */
+function _initCallStatsBackend(options) {
+    if (CallStats.isBackendInitialized()) {
+        return;
+    }
+
+    const userName = Settings.callStatsUserName;
+
+    if (!CallStats.initBackend({
+        callStatsID: options.callStatsID,
+        callStatsSecret: options.callStatsSecret,
+        userName: options.swapUserNameAndAlias
+            ? options.callStatsAliasName : userName,
+        aliasName: options.swapUserNameAndAlias
+            ? userName : options.callStatsAliasName,
+        applicationName: options.applicationName,
+        getWiFiStatsMethod: options.getWiFiStatsMethod
+    })) {
+        logger.error('CallStats Backend initialization failed bad');
+    }
 }
 
 /**
@@ -90,9 +123,27 @@ Statistics.init = function(options) {
 };
 
 /**
+ * The options to configure Statistics.
+ * @typedef {Object} StatisticsOptions
+ * @property {string} applicationName - The application name to pass to
+ * callstats.
+ * @property {string} callStatsAliasName - The alias name to use when
+ * initializing callstats.
+ * @property {string} callStatsConfIDNamespace - A namespace to prepend the
+ * callstats conference ID with.
+ * @property {string} callStatsID - Callstats credentials - the id.
+ * @property {string} callStatsSecret - Callstats credentials - the secret.
+ * @property {string} customScriptUrl - A custom lib url to use when downloading
+ * callstats library.
+ * @property {string} roomName - The room name we are currently in.
+ * @property {boolean} swapUserNameAndAlias - Whether to swap the places of
+ * username and alias when initiating callstats.
+ */
+/**
  *
  * @param xmpp
- * @param options
+ * @param {StatisticsOptions} options - The options to use creating the
+ * Statistics.
  */
 export default function Statistics(xmpp, options) {
     /**
@@ -113,7 +164,11 @@ export default function Statistics(xmpp, options) {
             // requests to any third parties.
             && (Statistics.disableThirdPartyRequests !== true);
     if (this.callStatsIntegrationEnabled) {
-        loadCallStatsAPI(this.options.callStatsCustomScriptUrl);
+        if (browser.isReactNative()) {
+            _initCallStatsBackend(this.options);
+        } else {
+            loadCallStatsAPI(this.options);
+        }
 
         if (!this.options.callStatsConfIDNamespace) {
             logger.warn('"callStatsConfIDNamespace" is not defined');
@@ -159,8 +214,11 @@ Statistics.prototype.startRemoteStats = function(peerconnection) {
 
     try {
         const rtpStats
-            = new RTPStats(peerconnection,
-                    Statistics.audioLevelsInterval, 2000, this.eventEmitter);
+            = new RTPStats(
+                peerconnection,
+                Statistics.audioLevelsInterval,
+                2000,
+                this.eventEmitter);
 
         rtpStats.start(Statistics.audioLevelsEnabled);
         this.rtpStatsMap.set(peerconnection.id, rtpStats);
@@ -304,21 +362,6 @@ Statistics.prototype.startCallStats = function(tpc, remoteUserID) {
         return;
     }
 
-    if (!CallStats.isBackendInitialized()) {
-        const userName = Settings.getCallStatsUserName();
-
-        if (!CallStats.initBackend({
-            callStatsID: this.options.callStatsID,
-            callStatsSecret: this.options.callStatsSecret,
-            userName,
-            aliasName: this.options.callStatsAliasName
-        })) {
-
-            // Backend initialization failed bad
-            return;
-        }
-    }
-
     logger.info(`Starting CallStats for ${tpc}...`);
 
     const newInstance
@@ -415,7 +458,7 @@ Statistics.prototype.sendConnectionResumeOrHoldEvent = function(tpc, isResume) {
 };
 
 /**
- * Notifies CallStats and analytics(if present) for ice connection failed
+ * Notifies CallStats and analytics (if present) for ice connection failed
  * @param {TraceablePeerConnection} tpc connection on which failure occurred.
  */
 Statistics.prototype.sendIceConnectionFailedEvent = function(tpc) {
@@ -424,7 +467,6 @@ Statistics.prototype.sendIceConnectionFailedEvent = function(tpc) {
     if (instance) {
         instance.sendIceConnectionFailedEvent();
     }
-    Statistics.analytics.sendEvent('connection.ice_failed');
 };
 
 /**
@@ -443,12 +485,15 @@ Statistics.prototype.sendMuteEvent = function(tpc, muted, type) {
  * Notifies CallStats for screen sharing events
  * @param start {boolean} true for starting screen sharing and
  * false for not stopping
+ * @param {string|null} ssrc - optional ssrc value, used only when
+ * starting screen sharing.
  */
-Statistics.prototype.sendScreenSharingEvent = function(start) {
-    for (const cs of this.callsStatsInstances.values()) {
-        cs.sendScreenSharingEvent(start);
-    }
-};
+Statistics.prototype.sendScreenSharingEvent
+    = function(start, ssrc) {
+        for (const cs of this.callsStatsInstances.values()) {
+            cs.sendScreenSharingEvent(start, ssrc);
+        }
+    };
 
 /**
  * Notifies the statistics module that we are now the dominant speaker of the
@@ -633,14 +678,17 @@ Statistics.sendLog = function(m) {
 /**
  * Sends the given feedback through CallStats.
  *
- * @param overall an integer between 1 and 5 indicating the user feedback
- * @param detailed detailed feedback from the user. Not yet used
+ * @param overall an integer between 1 and 5 indicating the user's rating.
+ * @param comment the comment from the user.
  */
-Statistics.prototype.sendFeedback = function(overall, detailed) {
-    CallStats.sendFeedback(this._getCallStatsConfID(), overall, detailed);
-    Statistics.analytics.sendEvent('feedback.rating',
-        { value: overall,
-            detailed });
+Statistics.prototype.sendFeedback = function(overall, comment) {
+    CallStats.sendFeedback(this._getCallStatsConfID(), overall, comment);
+    Statistics.analytics.sendEvent(
+        FEEDBACK,
+        {
+            rating: overall,
+            comment
+        });
 };
 
 Statistics.LOCAL_JID = require('../../service/statistics/constants').LOCAL_JID;
@@ -659,12 +707,46 @@ Statistics.reportGlobalError = function(error) {
 };
 
 /**
- * Sends event to analytics and callstats.
- * @param {string} eventName the event name.
- * @param {Object} data the data to be sent.
+ * Sends event to analytics and logs a message to the logger/console. Console
+ * messages might also be logged to callstats automatically.
+ *
+ * @param {string | Object} event the event name, or an object which
+ * represents the entire event.
+ * @param {Object} properties properties to attach to the event (if an event
+ * name as opposed to an event object is provided).
  */
-Statistics.sendEventToAll = function(eventName, data) {
-    this.analytics.sendEvent(eventName, data);
-    Statistics.sendLog(JSON.stringify({ name: eventName,
-        data }));
+Statistics.sendAnalyticsAndLog = function(event, properties = {}) {
+    if (!event) {
+        logger.warn('No event or event name given.');
+
+        return;
+    }
+
+    let eventToLog;
+
+    // Also support an API with a single object as an event.
+    if (typeof event === 'object') {
+        eventToLog = event;
+    } else {
+        eventToLog = {
+            name: event,
+            properties
+        };
+    }
+
+    logger.log(JSON.stringify(eventToLog));
+
+    // We do this last, because it may modify the object which is passed.
+    this.analytics.sendEvent(event, properties);
+};
+
+/**
+ * Sends event to analytics.
+ *
+ * @param {string | Object} eventName the event name, or an object which
+ * represents the entire event.
+ * @param {Object} properties properties to attach to the event
+ */
+Statistics.sendAnalytics = function(eventName, properties = {}) {
+    this.analytics.sendEvent(eventName, properties);
 };

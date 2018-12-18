@@ -25,6 +25,10 @@ const XMPPEvents = {
     // person in the conference room.
     CALL_ENDED: 'xmpp.callended.jingle',
     CHAT_ERROR_RECEIVED: 'xmpp.chat_error_received',
+
+    // The conference properties (as advertised by jicofo) have changed
+    CONFERENCE_PROPERTIES_CHANGED: 'xmpp.conference_properties_changed',
+
     CONFERENCE_SETUP_FAILED: 'xmpp.conference_setup_failed',
 
     /**
@@ -97,6 +101,13 @@ const XMPPEvents = {
     // received.
     MESSAGE_RECEIVED: 'xmpp.message_received',
 
+    // Designates an event indicating that a private XMPP message in the MUC was
+    // received.
+    PRIVATE_MESSAGE_RECEIVED: 'xmpp.private_message_received',
+
+    // Designates an event indicating that a bot participant type had changed
+    MUC_MEMBER_BOT_TYPE_CHANGED: 'xmpp.muc_member_bot_type_changed',
+
     // Designates an event indicating that the XMPP MUC was destroyed.
     MUC_DESTROYED: 'xmpp.muc_destroyed',
 
@@ -144,6 +155,7 @@ const XMPPEvents = {
      * Indicates that phone number changed.
      */
     PHONE_NUMBER_CHANGED: 'conference.phoneNumberChanged',
+    PRESENCE_RECEIVED: 'xmpp.presence_received',
     PRESENCE_STATUS: 'xmpp.presence_status',
     PROMPT_FOR_LOGIN: 'xmpp.prompt_for_login',
 
@@ -171,6 +183,10 @@ const XMPPEvents = {
     // Designates an event indicating that we sent an XMPP message to the MUC.
     SENDING_CHAT_MESSAGE: 'xmpp.sending_chat_message',
 
+    // Designates an event indicating that we sent a private XMPP message to
+    // a specific user of the muc.
+    SENDING_PRIVATE_CHAT_MESSAGE: 'xmpp.sending_private_chat_message',
+
     /**
      * Event fired when we do not get our 'session-accept' acknowledged by
      * Jicofo. It most likely means that there is serious problem with our
@@ -196,6 +212,14 @@ const XMPPEvents = {
     SUSPEND_DETECTED: 'xmpp.suspend_detected',
 
     /**
+     * Notifies for transcription status changes. The event provides the
+     * following parameters to its listeners:
+     *
+     * @param {String} status - The new status.
+     */
+    TRANSCRIPTION_STATUS_CHANGED: 'xmpp.transcription_status_changed',
+
+    /**
      * Event fired when 'transport-info' with new ICE candidates is received.
      */
     TRANSPORT_INFO: 'xmpp.transportinfo.jingle',
@@ -208,9 +232,26 @@ const XMPPEvents = {
      */
     VIDEO_SIP_GW_AVAILABILITY_CHANGED: 'xmpp.videoSIPGWAvailabilityChanged',
 
+    /**
+     * Indicates that video SIP GW Session state changed.
+     * The statuses are any of the following statuses:
+     * STATE_ON, STATE_OFF, STATE_PENDING, STATE_RETRYING, STATE_FAILED.
+     * {@see VideoSIPGWConstants}
+     *
+     * @param {options} event - {address, oldState, newState, displayName}.
+     */
+    VIDEO_SIP_GW_SESSION_STATE_CHANGED:
+        'xmpp.videoSIPGWSessionStateChanged',
+
     // Designates an event indicating that the local ICE connection state has
     // changed.
-    ICE_CONNECTION_STATE_CHANGED: 'xmpp.ice_connection_state_changed'
+    ICE_CONNECTION_STATE_CHANGED: 'xmpp.ice_connection_state_changed',
+
+    /**
+     * Event which is emitted when the body in an XMPP message in the MUC
+     * contains JSON
+     */
+    JSON_MESSAGE_RECEIVED: 'xmmp.json_message_received'
 };
 
 module.exports = XMPPEvents;

@@ -1,12 +1,12 @@
-/* global MediaRecorder, MediaStream, webkitMediaStream */
+/* global MediaRecorder, MediaStream */
 
 const RecordingResult = require('./recordingResult');
 
 /**
  * Possible audio formats MIME types
  */
-const AUDIO_WEBM = 'audio/webm';    // Supported in chrome
-const AUDIO_OGG = 'audio/ogg';     // Supported in firefox
+const AUDIO_WEBM = 'audio/webm'; // Supported in chrome
+const AUDIO_OGG = 'audio/ogg'; // Supported in firefox
 
 /**
  * A TrackRecorder object holds all the information needed for recording a
@@ -282,12 +282,12 @@ AudioRecorder.prototype.getRecordingResults = function() {
     const array = [];
 
     this.recorders.forEach(
-          recorder =>
-              array.push(
-                  new RecordingResult(
-                      new Blob(recorder.data, { type: this.fileType }),
-                      recorder.name,
-                      recorder.startTime)));
+        recorder =>
+            array.push(
+                new RecordingResult(
+                    new Blob(recorder.data, { type: this.fileType }),
+                    recorder.name,
+                    recorder.startTime)));
 
     return array;
 };
@@ -306,11 +306,8 @@ AudioRecorder.prototype.getFileType = function() {
  * @returns MediaStream
  */
 function createEmptyStream() {
-    // Firefox supports the MediaStream object, Chrome webkitMediaStream
     if (typeof MediaStream !== 'undefined') {
         return new MediaStream();
-    } else if (typeof webkitMediaStream !== 'undefined') {
-        return new webkitMediaStream(); // eslint-disable-line new-cap
     }
     throw new Error('cannot create a clean mediaStream');
 }

@@ -1,4 +1,6 @@
-/* global Strophe */
+
+import { Strophe } from 'strophe.js';
+
 import * as JitsiConferenceEvents from './JitsiConferenceEvents';
 import { ParticipantConnectionStatus }
     from './modules/connectivity/ParticipantConnectionStatus';
@@ -20,8 +22,10 @@ export default class JitsiParticipant {
      * @param displayName
      * @param {Boolean} hidden - True if the new JitsiParticipant instance is to
      * represent a hidden participant; otherwise, false.
+     * @param {string} statsID - optional participant statsID
+     * @param {string} status - the initial status if any.
      */
-    constructor(jid, conference, displayName, hidden) {
+    constructor(jid, conference, displayName, hidden, statsID, status) {
         this._jid = jid;
         this._id = Strophe.getResourceFromJid(jid);
         this._conference = conference;
@@ -29,12 +33,9 @@ export default class JitsiParticipant {
         this._supportsDTMF = false;
         this._tracks = [];
         this._role = 'none';
-        this._status = null;
-        this._availableDevices = {
-            audio: undefined,
-            video: undefined
-        };
+        this._status = status;
         this._hidden = hidden;
+        this._statsID = statsID;
         this._connectionStatus = ParticipantConnectionStatus.ACTIVE;
         this._properties = {};
     }
@@ -152,6 +153,13 @@ export default class JitsiParticipant {
     }
 
     /**
+     * @returns {String} The stats ID of this participant.
+     */
+    getStatsID() {
+        return this._statsID;
+    }
+
+    /**
      * @returns {String} The status of the participant.
      */
     getStatus() {
@@ -173,10 +181,6 @@ export default class JitsiParticipant {
     isHidden() {
         return this._hidden;
     }
-
-    // Gets a link to an etherpad instance advertised by the participant?
-    // getEtherpad() {
-    // }
 
     /**
      * @returns {Boolean} Whether this participant has muted their audio.
@@ -231,5 +235,14 @@ export default class JitsiParticipant {
      */
     getFeatures(timeout = 5000) {
         return this._conference.xmpp.caps.getFeatures(this._jid, timeout);
+    }
+
+    /**
+     * Returns the bot type for the participant.
+     *
+     * @returns {string|undefined} - The bot type of the participant.
+     */
+    getBotType() {
+        return this._botType;
     }
 }

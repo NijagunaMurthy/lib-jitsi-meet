@@ -1,10 +1,12 @@
-/* global $iq, Strophe */
-
 import { getLogger } from 'jitsi-meet-logger';
-const logger = getLogger(__filename);
+import { $iq, Strophe } from 'strophe.js';
+
+import GlobalOnErrorHandler from '../util/GlobalOnErrorHandler';
 
 import ConnectionPlugin from './ConnectionPlugin';
-import GlobalOnErrorHandler from '../util/GlobalOnErrorHandler';
+
+
+const logger = getLogger(__filename);
 
 /**
  * Ping every 10 sec
@@ -22,6 +24,13 @@ const PING_TIMEOUT = 15000;
 const PING_THRESHOLD = 3;
 
 /**
+ * The number of timestamps of send pings to keep.
+ * The current value is 2 minutes.
+ * @type {number} number of timestamps.
+ */
+const PING_TIMESTAMPS_TO_KEEP = 120000 / PING_INTERVAL;
+
+/**
  * XEP-0199 ping plugin.
  *
  * Registers "urn:xmpp:ping" namespace under Strophe.NS.PING.
@@ -36,6 +45,7 @@ class PingConnectionPlugin extends ConnectionPlugin {
         super();
         this.failedPings = 0;
         this.xmpp = xmpp;
+        this.pingExecIntervals = new Array(PING_TIMESTAMPS_TO_KEEP);
     }
 
     /**
@@ -58,6 +68,8 @@ class PingConnectionPlugin extends ConnectionPlugin {
      * timeout <tt>error<//t> callback is called with undefined error argument.
      */
     ping(jid, success, error, timeout) {
+        this._addPingExecutionTimestamp();
+
         const iq = $iq({
             type: 'get',
             to: jid
@@ -138,6 +150,58 @@ class PingConnectionPlugin extends ConnectionPlugin {
             this.failedPings = 0;
             logger.info('Ping interval cleared');
         }
+    }
+
+    /**
+     * Adds the current time to the array of send ping timestamps.
+     * @private
+     */
+    _addPingExecutionTimestamp() {
+        this.pingExecIntervals.push(new Date().getTime());
+
+        // keep array length to PING_TIMESTAMPS_TO_KEEP
+        if (this.pingExecIntervals.length > PING_TIMESTAMPS_TO_KEEP) {
+            this.pingExecIntervals.shift();
+        }
+    }
+
+    /**
+     * Returns the maximum time between the recent sent pings, if there is a
+     * big value it means the computer was inactive for some time(suspended).
+     * Checks the maximum gap between sending pings, considering and the
+     * current time. Trying to detect computer inactivity (sleep).
+     *
+     * @returns {int} the time ping was suspended, if it was not 0 is returned.
+     */
+    getPingSuspendTime() {
+        const pingIntervals = this.pingExecIntervals.slice();
+
+        // we need current time, as if ping was sent now
+        // if computer sleeps we will get correct interval after next
+        // scheduled ping, bet we sometimes need that interval before waiting
+        // for the next ping, on closing the connection on error.
+        pingIntervals.push(new Date().getTime());
+
+        let maxInterval = 0;
+        let previousTS = pingIntervals[0];
+
+        pingIntervals.forEach(e => {
+            const currentInterval = e - previousTS;
+
+            if (currentInterval > maxInterval) {
+                maxInterval = currentInterval;
+            }
+
+            previousTS = e;
+        });
+
+        // remove the interval between the ping sent
+        // this way in normal execution there is no suspend and the return
+        // will be 0 or close to 0.
+        maxInterval -= PING_INTERVAL;
+
+        // make sure we do not return less than 0
+        return Math.max(maxInterval, 0);
     }
 }
 

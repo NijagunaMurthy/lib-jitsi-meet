@@ -1,12 +1,13 @@
-/* global $, Strophe */
+/* global $ */
 
 import { getLogger } from 'jitsi-meet-logger';
-const logger = getLogger(__filename);
+import { Strophe } from 'strophe.js';
+import 'strophejs-plugin-disco';
 
 import RandomUtil from '../util/RandomUtil';
 import * as JitsiConnectionErrors from '../../JitsiConnectionErrors';
 import * as JitsiConnectionEvents from '../../JitsiConnectionEvents';
-import RTCBrowserType from '../RTC/RTCBrowserType';
+import browser from '../browser';
 import initEmuc from './strophe.emuc';
 import initJingle from './strophe.jingle';
 import initStropheUtil from './strophe.util';
@@ -15,6 +16,8 @@ import initRayo from './strophe.rayo';
 import initStropheLogger from './strophe.logger';
 import Listenable from '../util/Listenable';
 import Caps from './Caps';
+
+const logger = getLogger(__filename);
 
 /**
  *
@@ -28,7 +31,12 @@ function createConnection(token, bosh = '/http-bind') {
         bosh += `${bosh.indexOf('?') === -1 ? '?' : '&'}token=${token}`;
     }
 
-    return new Strophe.Connection(bosh);
+    const conn = new Strophe.Connection(bosh);
+
+    // The default maxRetries is 5, which is too long.
+    conn.maxRetries = 3;
+
+    return conn;
 }
 
 /**
@@ -47,9 +55,7 @@ export default class XMPP extends Listenable {
         this.connection = null;
         this.disconnectInProgress = false;
         this.connectionTimes = {};
-        this.forceMuted = false;
         this.options = options;
-        this.connectParams = {};
         this.token = token;
         this.authenticatedUser = false;
         this._initStrophePlugins(this);
@@ -84,7 +90,7 @@ export default class XMPP extends Listenable {
         this.caps.addFeature('urn:xmpp:jingle:apps:rtp:audio');
         this.caps.addFeature('urn:xmpp:jingle:apps:rtp:video');
 
-        if (!this.options.disableRtx && RTCBrowserType.supportsRtx()) {
+        if (!this.options.disableRtx && browser.supportsRtx()) {
             this.caps.addFeature('urn:ietf:rfc:4588');
         }
 
@@ -100,7 +106,7 @@ export default class XMPP extends Listenable {
         // this.caps.addFeature('urn:ietf:rfc:5576'); // a=ssrc
 
         // Enable Lipsync ?
-        if (RTCBrowserType.isChrome() && this.options.enableLipSync !== false) {
+        if (browser.isChrome() && this.options.enableLipSync !== false) {
             logger.info('Lip-sync enabled !');
             this.caps.addFeature('http://jitsi.org/meet/lipsync');
         }
@@ -119,11 +125,16 @@ export default class XMPP extends Listenable {
 
     /**
      * Receive connection status changes and handles them.
-     * @password {string} the password passed in connect method
-     * @status the connection status
-     * @msg message
+     *
+     * @param {Object} credentials
+     * @param {string} credentials.jid - The user's XMPP ID passed to the
+     * connect method. For example, 'user@xmpp.com'.
+     * @param {string} credentials.password - The password passed to the connect
+     * method.
+     * @param {string} status - One of Strophe's connection status strings.
+     * @param {string} [msg] - The connection error message provided by Strophe.
      */
-    connectionHandler(password, status, msg) {
+    connectionHandler(credentials = {}, status, msg) {
         const now = window.performance.now();
         const statusStr = Strophe.getStatusString(status).toLowerCase();
 
@@ -133,7 +144,8 @@ export default class XMPP extends Listenable {
             now);
         if (status === Strophe.Status.CONNECTED
             || status === Strophe.Status.ATTACHED) {
-            if (this.options.useStunTurn) {
+            if (this.options.useStunTurn
+                || (this.options.p2p && this.options.p2p.useStunTurn)) {
                 this.connection.jingle.getStunAndTurnCredentials();
             }
 
@@ -152,16 +164,16 @@ export default class XMPP extends Listenable {
                     }
                 });
 
-            if (password) {
+            if (credentials.password) {
                 this.authenticatedUser = true;
             }
             if (this.connection && this.connection.connected
-                && Strophe.getResourceFromJid(this.connection.jid)) {
+                    && Strophe.getResourceFromJid(this.connection.jid)) {
                 // .connected is true while connecting?
-    //                this.connection.send($pres());
+                // this.connection.send($pres());
                 this.eventEmitter.emit(
-                        JitsiConnectionEvents.CONNECTION_ESTABLISHED,
-                        Strophe.getResourceFromJid(this.connection.jid));
+                    JitsiConnectionEvents.CONNECTION_ESTABLISHED,
+                    Strophe.getResourceFromJid(this.connection.jid));
             }
         } else if (status === Strophe.Status.CONNFAIL) {
             if (msg === 'x-strophe-bad-non-anon-jid') {
@@ -170,11 +182,16 @@ export default class XMPP extends Listenable {
                 this.connectionFailed = true;
             }
             this.lastErrorMsg = msg;
+            if (msg === 'giving-up') {
+                this.eventEmitter.emit(
+                    JitsiConnectionEvents.CONNECTION_FAILED,
+                    JitsiConnectionErrors.OTHER_ERROR, msg);
+            }
         } else if (status === Strophe.Status.DISCONNECTED) {
             // Stop ping interval
             this.connection.ping.stopInterval();
             const wasIntentionalDisconnect = this.disconnectInProgress;
-            const errMsg = msg ? msg : this.lastErrorMsg;
+            const errMsg = msg || this.lastErrorMsg;
 
             this.disconnectInProgress = false;
             if (this.anonymousConnectionFailed) {
@@ -185,7 +202,10 @@ export default class XMPP extends Listenable {
             } else if (this.connectionFailed) {
                 this.eventEmitter.emit(
                     JitsiConnectionEvents.CONNECTION_FAILED,
-                    JitsiConnectionErrors.OTHER_ERROR, errMsg);
+                    JitsiConnectionErrors.OTHER_ERROR,
+                    errMsg,
+                    undefined, /* credentials */
+                    this._getConnectionFailedReasonDetails());
             } else if (wasIntentionalDisconnect) {
                 this.eventEmitter.emit(
                     JitsiConnectionEvents.CONNECTION_DISCONNECTED, errMsg);
@@ -205,19 +225,21 @@ export default class XMPP extends Listenable {
                     this.eventEmitter.emit(
                         JitsiConnectionEvents.CONNECTION_FAILED,
                         JitsiConnectionErrors.SERVER_ERROR,
-                        errMsg ? errMsg : 'server-error');
+                        errMsg || 'server-error');
                 } else {
                     this.eventEmitter.emit(
                         JitsiConnectionEvents.CONNECTION_FAILED,
                         JitsiConnectionErrors.CONNECTION_DROPPED_ERROR,
-                        errMsg ? errMsg : 'connection-dropped-error');
+                        errMsg || 'connection-dropped-error');
                 }
             }
         } else if (status === Strophe.Status.AUTHFAIL) {
             // wrong password or username, prompt user
-            this.eventEmitter.emit(JitsiConnectionEvents.CONNECTION_FAILED,
-                JitsiConnectionErrors.PASSWORD_REQUIRED);
-
+            this.eventEmitter.emit(
+                JitsiConnectionEvents.CONNECTION_FAILED,
+                JitsiConnectionErrors.PASSWORD_REQUIRED,
+                msg,
+                credentials);
         }
     }
 
@@ -257,8 +279,13 @@ export default class XMPP extends Listenable {
         this.anonymousConnectionFailed = false;
         this.connectionFailed = false;
         this.lastErrorMsg = undefined;
-        this.connection.connect(jid, password,
-            this.connectionHandler.bind(this, password));
+        this.connection.connect(
+            jid,
+            password,
+            this.connectionHandler.bind(this, {
+                jid,
+                password
+            }));
     }
 
     /**
@@ -274,7 +301,10 @@ export default class XMPP extends Listenable {
         logger.log(`(TIME) Strophe Attaching\t:${now}`);
         this.connection.attach(options.jid, options.sid,
             parseInt(options.rid, 10) + 1,
-            this.connectionHandler.bind(this, options.password));
+            this.connectionHandler.bind(this, {
+                jid: options.jid,
+                password: options.password
+            }));
     }
 
     /**
@@ -283,26 +313,30 @@ export default class XMPP extends Listenable {
      * @param password
      */
     connect(jid, password) {
-        this.connectParams = {
-            jid,
-            password
-        };
         if (!jid) {
-            let configDomain
-                = this.options.hosts.anonymousdomain
-                    || this.options.hosts.domain;
+            const { anonymousdomain, domain } = this.options.hosts;
+            let configDomain = anonymousdomain || domain;
 
             // Force authenticated domain if room is appended with '?login=true'
             // or if we're joining with the token
 
-            if (this.options.hosts.anonymousdomain
-                    && (window.location.search.indexOf('login=true') !== -1
-                        || this.token)) {
-                configDomain = this.options.hosts.domain;
+            // FIXME Do not rely on window.location because (1) React Native
+            // does not have a window.location by default and (2) here we cannot
+            // know for sure that query/search has not be stripped from
+            // window.location by the time the following executes.
+            const { location } = window;
+
+            if (anonymousdomain) {
+                const search = location && location.search;
+
+                if ((search && search.indexOf('login=true') !== -1)
+                        || this.token) {
+                    configDomain = domain;
+                }
             }
 
             // eslint-disable-next-line no-param-reassign
-            jid = configDomain || window.location.hostname;
+            jid = configDomain || (location && location.hostname);
         }
 
         return this._connect(jid, password);
@@ -395,9 +429,7 @@ export default class XMPP extends Listenable {
      * disconnect from the XMPP server (e.g. beforeunload, unload).
      */
     disconnect(ev) {
-        if (this.disconnectInProgress
-                || !this.connection
-                || !this.connection.connected) {
+        if (this.disconnectInProgress || !this.connection) {
             this.eventEmitter.emit(JitsiConnectionEvents.WRONG_STATE);
 
             return;
@@ -443,11 +475,82 @@ export default class XMPP extends Listenable {
      *
      */
     _initStrophePlugins() {
+        const iceConfig = {
+            jvb: { iceServers: [ ] },
+            p2p: { iceServers: [ ] }
+        };
+
+        // FIXME: remove once we have a default config template. -saghul
+        const defaultStunServers = [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+        ];
+
+        const p2pStunServers = (this.options.p2p
+            && this.options.p2p.stunServers) || defaultStunServers;
+
+        if (Array.isArray(p2pStunServers)) {
+            logger.info('P2P STUN servers: ', p2pStunServers);
+            iceConfig.p2p.iceServers = p2pStunServers;
+        }
+
+        if (this.options.p2p && this.options.p2p.iceTransportPolicy) {
+            logger.info('P2P ICE transport policy: ',
+                this.options.p2p.iceTransportPolicy);
+
+            iceConfig.p2p.iceTransportPolicy
+                = this.options.p2p.iceTransportPolicy;
+        }
+
         initEmuc(this);
-        initJingle(this, this.eventEmitter, this.options.p2pStunServers);
+        initJingle(this, this.eventEmitter, iceConfig);
         initStropheUtil();
         initPing(this);
         initRayo();
         initStropheLogger();
+    }
+
+    /**
+     * Returns details about connection failure. Shard change or is it after
+     * suspend.
+     * @returns {object} contains details about a connection failure.
+     * @private
+     */
+    _getConnectionFailedReasonDetails() {
+        const details = {};
+
+        // check for moving between shard if information is available
+        if (this.options.deploymentInfo
+            && this.options.deploymentInfo.shard
+            && this.connection._proto
+            && this.connection._proto.lastResponseHeaders) {
+
+            // split headers by line
+            const headersArr = this.connection._proto.lastResponseHeaders
+                .trim().split(/[\r\n]+/);
+            const headers = {};
+
+            headersArr.forEach(line => {
+                const parts = line.split(': ');
+                const header = parts.shift();
+                const value = parts.join(': ');
+
+                headers[header] = value;
+            });
+
+            /* eslint-disable camelcase */
+            details.shard_changed
+                = this.options.deploymentInfo.shard
+                    !== headers['x-jitsi-shard'];
+            /* eslint-enable camelcase */
+        }
+
+        /* eslint-disable camelcase */
+        // check for possible suspend
+        details.suspend_time = this.connection.ping.getPingSuspendTime();
+        /* eslint-enable camelcase */
+
+        return details;
     }
 }

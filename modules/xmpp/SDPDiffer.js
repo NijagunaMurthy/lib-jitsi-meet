@@ -42,6 +42,11 @@ function arrayEquals(array1, array2) {
 export default function SDPDiffer(mySDP, otherSDP) {
     this.mySDP = mySDP;
     this.otherSDP = otherSDP;
+    if (!mySDP) {
+        throw new Error('"mySDP" is undefined!');
+    } else if (!otherSDP) {
+        throw new Error('"otherSDP" is undefined!');
+    }
 }
 
 /**
@@ -79,6 +84,26 @@ SDPDiffer.prototype.getNewMedia = function() {
                     };
                 }
                 newMedia[othersMediaIdx].ssrcs[ssrc] = othersMedia.ssrcs[ssrc];
+            } else if (othersMedia.ssrcs[ssrc].lines
+                        && myMedia.ssrcs[ssrc].lines) {
+                // we want to detect just changes in adding/removing msid
+                const myContainMsid = myMedia.ssrcs[ssrc].lines.find(
+                    line => line.indexOf('msid') !== -1) !== undefined;
+                const newContainMsid = othersMedia.ssrcs[ssrc].lines.find(
+                    line => line.indexOf('msid') !== -1) !== undefined;
+
+                if (myContainMsid !== newContainMsid) {
+                    if (!newMedia[othersMediaIdx]) {
+                        newMedia[othersMediaIdx] = {
+                            mediaindex: othersMedia.mediaindex,
+                            mid: othersMedia.mid,
+                            ssrcs: {},
+                            ssrcGroups: []
+                        };
+                    }
+                    newMedia[othersMediaIdx].ssrcs[ssrc]
+                        = othersMedia.ssrcs[ssrc];
+                }
             }
         });
 

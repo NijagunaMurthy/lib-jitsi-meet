@@ -17,26 +17,36 @@ export default class JingleSession {
      * Creates new <tt>JingleSession</tt>.
      * @param {string} sid the Jingle session identifier
      * @param {string} localJid our JID
-     * @param {string} peerjid the JID of the remote peer
+     * @param {string} remoteJid the JID of the remote peer
      * @param {Strophe.Connection} connection the XMPP connection
      * @param {Object} mediaConstraints the media constraints object passed to
      * the PeerConnection onCreateAnswer/Offer as defined by the WebRTC.
      * @param {Object} iceConfig the ICE servers config object as defined by
      * the WebRTC. Passed to the PeerConnection's constructor.
+     * @param {boolean} isInitiator indicates if it will be the side which
+     * initiates the session.
      */
     constructor(
             sid,
             localJid,
-            peerjid,
+            remoteJid,
             connection,
             mediaConstraints,
-            iceConfig) {
+            iceConfig,
+            isInitiator) {
         this.sid = sid;
         this.localJid = localJid;
-        this.peerjid = peerjid;
+        this.remoteJid = remoteJid;
         this.connection = connection;
         this.mediaConstraints = mediaConstraints;
         this.iceConfig = iceConfig;
+
+        /**
+         * Indicates whether this instance is an initiator or an answerer of
+         * the Jingle session.
+         * @type {boolean}
+         */
+        this.isInitiator = isInitiator;
 
         /**
          * Whether to use dripping or not. Dripping is sending trickle
@@ -68,16 +78,33 @@ export default class JingleSession {
         this.rtc = null;
     }
 
+    /**
+     * Returns XMPP address of this session's initiator.
+     * @return {string}
+     */
+    get initiatorJid() {
+        return this.isInitiator ? this.localJid : this.remoteJid;
+    }
+
+    /**
+     * Returns XMPP address of this session's responder.
+     * @return {string}
+     */
+    get responderJid() {
+        return this.isInitiator ? this.remoteJid : this.localJid;
+    }
+
     /* eslint-enable max-params */
 
     /**
      * Prepares this object to initiate a session.
-     * @param {boolean} isInitiator whether we will be the Jingle initiator.
      * @param {ChatRoom} room the chat room for the conference associated with
      * this session
      * @param {RTC} rtc the RTC service instance
+     * @param {object} options - the options, see implementing class's
+     * {@link #doInitialize} description for more details.
      */
-    initialize(isInitiator, room, rtc) {
+    initialize(room, rtc, options) {
         if (this.state !== null) {
             const errmsg
                 = `attempt to initiate on session ${this.sid}
@@ -89,17 +116,16 @@ export default class JingleSession {
         this.room = room;
         this.rtc = rtc;
         this.state = JingleSessionState.PENDING;
-        this.initiator = isInitiator ? this.localJid : this.peerjid;
-        this.responder = isInitiator ? this.peerjid : this.localJid;
-        this.doInitialize();
+        this.doInitialize(options);
     }
 
     /**
      * The implementing class finishes initialization here. Called at the end of
      * {@link initialize}.
+     * @param {Object} options - The options specific to the implementing class.
      * @protected
      */
-    doInitialize() {} // eslint-disable-line no-empty-function
+    doInitialize(options) { } // eslint-disable-line no-unused-vars, no-empty-function, max-len
 
     /* eslint-disable no-unused-vars, no-empty-function */
 
@@ -163,6 +189,13 @@ export default class JingleSession {
      * than analysed in the code, as the error is unrecoverable anyway)
      */
     acceptOffer(jingle, success, failure) {}
+
+    /**
+     * Returns the JID of the initiator of the jingle session.
+     */
+    _getInitiatorJid() {
+        return this.isInitiator ? this.localJid : this.remoteJid;
+    }
 
     /* eslint-enable no-unused-vars, no-empty-function */
 }

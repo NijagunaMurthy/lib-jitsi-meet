@@ -1,11 +1,12 @@
 /* global __filename */
 
+import { createRtpStatsEvent } from '../../service/statistics/AnalyticsEvents';
 import { getLogger } from 'jitsi-meet-logger';
 import * as ConnectionQualityEvents
     from '../../service/connectivity/ConnectionQualityEvents';
 import * as ConferenceEvents from '../../JitsiConferenceEvents';
 import * as MediaType from '../../service/RTC/MediaType';
-import RTCBrowserType from '../RTC/RTCBrowserType';
+import browser from '../browser';
 import Statistics from './statistics';
 import * as VideoType from '../../service/RTC/VideoType';
 
@@ -25,6 +26,7 @@ class AverageStatReport {
         this.name = name;
         this.count = 0;
         this.sum = 0;
+        this.samples = [];
     }
 
     /**
@@ -39,6 +41,7 @@ class AverageStatReport {
                 nextValue);
         } else if (!isNaN(nextValue)) {
             this.sum += nextValue;
+            this.samples.push(nextValue);
             this.count += 1;
         }
     }
@@ -53,16 +56,13 @@ class AverageStatReport {
     }
 
     /**
-     * Calculates an average and submit the report to the analytics module.
-     * @param {boolean} isP2P indicates if the report is to be submitted for
-     * the P2P connection (when conference is currently in the P2P mode). This
-     * will add 'p2p.' prefix to the name of the event. All averages should be
-     * cleared when the conference switches, between P2P and JVB modes.
+     * Appends the report to the analytics "data" object. The object will be
+     * set under <tt>prefix</tt> + {@link this.name} key.
+     * @param {Object} report the analytics "data" object
      */
-    report(isP2P) {
-        Statistics.analytics.sendEvent(
-            `${isP2P ? 'p2p.' : ''}${this.name}`,
-            { value: this.calculate() });
+    appendReport(report) {
+        report[`${this.name}_avg`] = this.calculate();
+        report[`${this.name}_samples`] = JSON.stringify(this.samples);
     }
 
     /**
@@ -70,6 +70,7 @@ class AverageStatReport {
      * calculated using this instance.
      */
     reset() {
+        this.samples = [];
         this.sum = 0;
         this.count = 0;
     }
@@ -83,12 +84,12 @@ class AverageStatReport {
 class ConnectionAvgStats {
     /**
      * Creates new <tt>ConnectionAvgStats</tt>
-     * @param {JitsiConference} conference
+     * @param {AvgRTPStatsReporter} avgRtpStatsReporter
      * @param {boolean} isP2P
      * @param {number} n the number of samples, before arithmetic mean is to be
      * calculated and values submitted to the analytics module.
      */
-    constructor(conference, isP2P, n) {
+    constructor(avgRtpStatsReporter, isP2P, n) {
         /**
          * Is this instance for JVB or P2P connection ?
          * @type {boolean}
@@ -114,7 +115,7 @@ class ConnectionAvgStats {
          * Average round trip time reported by the ICE candidate pair.
          * @type {AverageStatReport}
          */
-        this._avgRTT = new AverageStatReport('stat.avg.rtt');
+        this._avgRTT = new AverageStatReport('rtt');
 
         /**
          * Map stores average RTT to the JVB reported by remote participants.
@@ -133,13 +134,26 @@ class ConnectionAvgStats {
          * @type {JitsiConference}
          * @private
          */
-        this._conference = conference;
+        this._avgRtpStatsReporter = avgRtpStatsReporter;
+
+        /**
+         * The latest average E2E RTT for the JVB connection only.
+         *
+         * This is used only when {@link ConnectionAvgStats.isP2P} equals to
+         * <tt>false</tt>.
+         *
+         * @type {number}
+         */
+        this._avgEnd2EndRTT = undefined;
 
         this._onConnectionStats = (tpc, stats) => {
             if (this.isP2P === tpc.isP2P) {
                 this._calculateAvgStats(stats);
             }
         };
+
+        const conference = avgRtpStatsReporter._conference;
+
         conference.statistics.addConnectionStatsListener(
             this._onConnectionStats);
 
@@ -167,7 +181,7 @@ class ConnectionAvgStats {
             return;
         }
 
-        if (RTCBrowserType.supportsRTTStatistics()) {
+        if (browser.supportsRTTStatistics()) {
             if (data.transport && data.transport.length) {
                 this._avgRTT.addNext(data.transport[0].rtt);
             }
@@ -176,20 +190,50 @@ class ConnectionAvgStats {
         this._sampleIdx += 1;
 
         if (this._sampleIdx >= this._n) {
-            if (RTCBrowserType.supportsRTTStatistics()) {
-                this._avgRTT.report(this.isP2P);
+            if (browser.supportsRTTStatistics()) {
+                const conference = this._avgRtpStatsReporter._conference;
 
-                // Report end to end RTT only for JVB
-                if (!this.isP2P) {
+                const batchReport = {
+                    p2p: this.isP2P,
+                    'conference_size': conference.getParticipantCount()
+                };
+
+                if (data.transport && data.transport.length) {
+                    Object.assign(batchReport, {
+                        'local_candidate_type':
+                            data.transport[0].localCandidateType,
+                        'remote_candidate_type':
+                            data.transport[0].remoteCandidateType,
+                        'transport_type': data.transport[0].type
+                    });
+                }
+
+                this._avgRTT.appendReport(batchReport);
+
+                if (this.isP2P) {
+                    // Report RTT diff only for P2P.
+                    const jvbEnd2EndRTT = this
+                        ._avgRtpStatsReporter.jvbStatsMonitor._avgEnd2EndRTT;
+
+                    if (!isNaN(jvbEnd2EndRTT)) {
+                        // eslint-disable-next-line dot-notation
+                        batchReport['rtt_diff']
+                            = this._avgRTT.calculate() - jvbEnd2EndRTT;
+                    }
+                } else {
+                    // Report end to end RTT only for JVB.
                     const avgRemoteRTT = this._calculateAvgRemoteRTT();
                     const avgLocalRTT = this._avgRTT.calculate();
 
+                    this._avgEnd2EndRTT = avgLocalRTT + avgRemoteRTT;
+
                     if (!isNaN(avgLocalRTT) && !isNaN(avgRemoteRTT)) {
-                        Statistics.analytics.sendEvent(
-                            'stat.avg.end2endrtt',
-                            { value: avgLocalRTT + avgRemoteRTT });
+                        // eslint-disable-next-line dot-notation
+                        batchReport['end2end_rtt_avg'] = this._avgEnd2EndRTT;
                     }
                 }
+
+                Statistics.sendAnalytics(createRtpStatsEvent(batchReport));
             }
 
             this._resetAvgStats();
@@ -232,7 +276,7 @@ class ConnectionAvgStats {
         let rttAvg = this._avgRemoteRTTMap.get(id);
 
         if (!rttAvg && validData) {
-            rttAvg = new AverageStatReport(`${id}.stat.rtt`);
+            rttAvg = new AverageStatReport(`${id}_stat_rtt`);
             this._avgRemoteRTTMap.set(id, rttAvg);
         }
 
@@ -259,13 +303,16 @@ class ConnectionAvgStats {
      *
      */
     dispose() {
-        this._conference.statistics.removeConnectionStatsListener(
+
+        const conference = this._avgRtpStatsReporter._conference;
+
+        conference.statistics.removeConnectionStatsListener(
             this._onConnectionStats);
         if (!this.isP2P) {
-            this._conference.off(
+            conference.off(
                 ConnectionQualityEvents.REMOTE_STATS_UPDATED,
                 this._onRemoteStatsUpdated);
-            this._conference.off(
+            conference.off(
                 ConferenceEvents.USER_LEFT,
                 this._onUserLeft);
         }
@@ -322,82 +369,91 @@ export default class AvgRTPStatsReporter {
 
         /**
          * Average audio upload bitrate
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgAudioBitrateUp
-            = new AverageStatReport('stat.avg.bitrate.audio.upload');
+            = new AverageStatReport('bitrate_audio_upload');
 
         /**
          * Average audio download bitrate
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgAudioBitrateDown
-            = new AverageStatReport('stat.avg.bitrate.audio.download');
+            = new AverageStatReport('bitrate_audio_download');
 
         /**
          * Average video upload bitrate
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgVideoBitrateUp
-            = new AverageStatReport('stat.avg.bitrate.video.upload');
+            = new AverageStatReport('bitrate_video_upload');
 
         /**
          * Average video download bitrate
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgVideoBitrateDown
-            = new AverageStatReport('stat.avg.bitrate.video.download');
+            = new AverageStatReport('bitrate_video_download');
 
         /**
          * Average upload bandwidth
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgBandwidthUp
-            = new AverageStatReport('stat.avg.bandwidth.upload');
+            = new AverageStatReport('bandwidth_upload');
 
         /**
          * Average download bandwidth
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgBandwidthDown
-            = new AverageStatReport('stat.avg.bandwidth.download');
+            = new AverageStatReport('bandwidth_download');
 
         /**
          * Average total packet loss
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgPacketLossTotal
-            = new AverageStatReport('stat.avg.packetloss.total');
+            = new AverageStatReport('packet_loss_total');
 
         /**
          * Average upload packet loss
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgPacketLossUp
-            = new AverageStatReport('stat.avg.packetloss.upload');
+            = new AverageStatReport('packet_loss_upload');
 
         /**
          * Average download packet loss
+         * XXX What are the units?
          * @type {AverageStatReport}
          * @private
          */
         this._avgPacketLossDown
-            = new AverageStatReport('stat.avg.packetloss.download');
+            = new AverageStatReport('packet_loss_download');
 
         /**
          * Average FPS for remote videos
          * @type {AverageStatReport}
          * @private
          */
-        this._avgRemoteFPS = new AverageStatReport('stat.avg.framerate.remote');
+        this._avgRemoteFPS = new AverageStatReport('framerate_remote');
 
         /**
          * Average FPS for remote screen streaming videos (reported only if not
@@ -406,14 +462,14 @@ export default class AvgRTPStatsReporter {
          * @private
          */
         this._avgRemoteScreenFPS
-            = new AverageStatReport('stat.avg.framerate.screen.remote');
+            = new AverageStatReport('framerate_screen_remote');
 
         /**
          * Average FPS for local video (camera)
          * @type {AverageStatReport}
          * @private
          */
-        this._avgLocalFPS = new AverageStatReport('stat.avg.framerate.local');
+        this._avgLocalFPS = new AverageStatReport('framerate_local');
 
         /**
          * Average FPS for local screen streaming video (reported only if not
@@ -422,7 +478,42 @@ export default class AvgRTPStatsReporter {
          * @private
          */
         this._avgLocalScreenFPS
-            = new AverageStatReport('stat.avg.framerate.screen.local');
+            = new AverageStatReport('framerate_screen_local');
+
+        /**
+         * Average pixels for remote screen streaming videos (reported only if
+         * not a <tt>NaN</tt>).
+         * @type {AverageStatReport}
+         * @private
+         */
+        this._avgRemoteCameraPixels
+            = new AverageStatReport('pixels_remote');
+
+        /**
+         * Average pixels for remote screen streaming videos (reported only if
+         * not a <tt>NaN</tt>).
+         * @type {AverageStatReport}
+         * @private
+         */
+        this._avgRemoteScreenPixels
+            = new AverageStatReport('pixels_screen_remote');
+
+        /**
+         * Average pixels for local video (camera)
+         * @type {AverageStatReport}
+         * @private
+         */
+        this._avgLocalCameraPixels
+            = new AverageStatReport('pixels_local');
+
+        /**
+         * Average pixels for local screen streaming video (reported only if not
+         * a <tt>NaN</tt>).
+         * @type {AverageStatReport}
+         * @private
+         */
+        this._avgLocalScreenPixels
+            = new AverageStatReport('pixels_screen_local');
 
         /**
          * Average connection quality as defined by
@@ -430,7 +521,7 @@ export default class AvgRTPStatsReporter {
          * @type {AverageStatReport}
          * @private
          */
-        this._avgCQ = new AverageStatReport('stat.avg.cq');
+        this._avgCQ = new AverageStatReport('connection_quality');
 
         this._onLocalStatsUpdated = data => this._calculateAvgStats(data);
         conference.on(
@@ -447,11 +538,24 @@ export default class AvgRTPStatsReporter {
             ConferenceEvents.P2P_STATUS,
             this._onP2PStatusChanged);
 
+        this._onJvb121StatusChanged = (oldStatus, newStatus) => {
+            // We want to reset only on the transition from false => true,
+            // because otherwise those stats are resetted on JVB <=> P2P
+            // transition.
+            if (newStatus === true) {
+                logger.info('Resetting JVB avg RTP stats');
+                this._resetAvgJvbStats();
+            }
+        };
+        conference.on(
+            ConferenceEvents.JVB121_STATUS,
+            this._onJvb121StatusChanged);
+
         this.jvbStatsMonitor
-            = new ConnectionAvgStats(conference, false /* JVB */, n);
+            = new ConnectionAvgStats(this, false /* JVB */, n);
 
         this.p2pStatsMonitor
-            = new ConnectionAvgStats(conference, true /* P2P */, n);
+            = new ConnectionAvgStats(this, true /* P2P */, n);
     }
 
     /**
@@ -462,10 +566,16 @@ export default class AvgRTPStatsReporter {
      */
     _calculateAvgStats(data) {
 
-        const isP2P = this._conference.isP2PActive();
-        const peerCount = this._conference.getParticipants().length;
+        if (!data) {
+            logger.error('No stats');
 
-        if (!isP2P && peerCount < 1) {
+            return;
+        }
+
+        const isP2P = this._conference.isP2PActive();
+        const confSize = this._conference.getParticipantCount();
+
+        if (!isP2P && confSize < 2) {
 
             // There's no point in collecting stats for a JVB conference of 1.
             // That happens for short period of time after everyone leaves
@@ -480,16 +590,11 @@ export default class AvgRTPStatsReporter {
             }
         } */
 
-        if (!data) {
-            logger.error('No stats');
-
-            return;
-        }
-
         const bitrate = data.bitrate;
         const bandwidth = data.bandwidth;
         const packetLoss = data.packetLoss;
         const frameRate = data.framerate;
+        const resolution = data.resolution;
 
         if (!bitrate) {
             logger.error('No "bitrate"');
@@ -507,6 +612,10 @@ export default class AvgRTPStatsReporter {
             logger.error('No "framerate"');
 
             return;
+        } else if (!resolution) {
+            logger.error('No resolution');
+
+            return;
         }
 
         this._avgAudioBitrateUp.addNext(bitrate.audio.upload);
@@ -515,7 +624,7 @@ export default class AvgRTPStatsReporter {
         this._avgVideoBitrateUp.addNext(bitrate.video.upload);
         this._avgVideoBitrateDown.addNext(bitrate.video.download);
 
-        if (RTCBrowserType.supportsBandwidthStatistics()) {
+        if (browser.supportsBandwidthStatistics()) {
             this._avgBandwidthUp.addNext(bandwidth.upload);
             this._avgBandwidthDown.addNext(bandwidth.download);
         }
@@ -542,37 +651,181 @@ export default class AvgRTPStatsReporter {
                     frameRate, true /* local */, VideoType.DESKTOP));
         }
 
+        if (resolution) {
+            this._avgRemoteCameraPixels.addNext(
+                this._calculateAvgVideoPixels(
+                    resolution, false /* remote */, VideoType.CAMERA));
+
+            this._avgRemoteScreenPixels.addNext(
+                this._calculateAvgVideoPixels(
+                    resolution, false /* remote */, VideoType.DESKTOP));
+
+            this._avgLocalCameraPixels.addNext(
+                this._calculateAvgVideoPixels(
+                    resolution, true /* local */, VideoType.CAMERA));
+
+            this._avgLocalScreenPixels.addNext(
+                this._calculateAvgVideoPixels(
+                    resolution, true /* local */, VideoType.DESKTOP));
+        }
+
         this._sampleIdx += 1;
 
         if (this._sampleIdx >= this._n) {
-            this._avgAudioBitrateUp.report(isP2P);
-            this._avgAudioBitrateDown.report(isP2P);
 
-            this._avgVideoBitrateUp.report(isP2P);
-            this._avgVideoBitrateDown.report(isP2P);
+            const batchReport = {
+                p2p: isP2P,
+                'conference_size': confSize
+            };
 
-            if (RTCBrowserType.supportsBandwidthStatistics()) {
-                this._avgBandwidthUp.report(isP2P);
-                this._avgBandwidthDown.report(isP2P);
+            if (data.transport && data.transport.length) {
+                Object.assign(batchReport, {
+                    'local_candidate_type':
+                        data.transport[0].localCandidateType,
+                    'remote_candidate_type':
+                        data.transport[0].remoteCandidateType,
+                    'transport_type': data.transport[0].type
+                });
             }
-            this._avgPacketLossUp.report(isP2P);
-            this._avgPacketLossDown.report(isP2P);
-            this._avgPacketLossTotal.report(isP2P);
 
-            this._avgRemoteFPS.report(isP2P);
+            this._avgAudioBitrateUp.appendReport(batchReport);
+            this._avgAudioBitrateDown.appendReport(batchReport);
+
+            this._avgVideoBitrateUp.appendReport(batchReport);
+            this._avgVideoBitrateDown.appendReport(batchReport);
+
+            if (browser.supportsBandwidthStatistics()) {
+                this._avgBandwidthUp.appendReport(batchReport);
+                this._avgBandwidthDown.appendReport(batchReport);
+            }
+            this._avgPacketLossUp.appendReport(batchReport);
+            this._avgPacketLossDown.appendReport(batchReport);
+            this._avgPacketLossTotal.appendReport(batchReport);
+
+            this._avgRemoteFPS.appendReport(batchReport);
             if (!isNaN(this._avgRemoteScreenFPS.calculate())) {
-                this._avgRemoteScreenFPS.report(isP2P);
+                this._avgRemoteScreenFPS.appendReport(batchReport);
             }
-            this._avgLocalFPS.report(isP2P);
+            this._avgLocalFPS.appendReport(batchReport);
             if (!isNaN(this._avgLocalScreenFPS.calculate())) {
-                this._avgLocalScreenFPS.report(isP2P);
+                this._avgLocalScreenFPS.appendReport(batchReport);
             }
 
-            this._avgCQ.report(isP2P);
+            this._avgRemoteCameraPixels.appendReport(batchReport);
+            if (!isNaN(this._avgRemoteScreenPixels.calculate())) {
+                this._avgRemoteScreenPixels.appendReport(batchReport);
+            }
+            this._avgLocalCameraPixels.appendReport(batchReport);
+            if (!isNaN(this._avgLocalScreenPixels.calculate())) {
+                this._avgLocalScreenPixels.appendReport(batchReport);
+            }
+
+            this._avgCQ.appendReport(batchReport);
+
+            Statistics.sendAnalytics(createRtpStatsEvent(batchReport));
 
             this._resetAvgStats();
         }
     }
+
+    /**
+     * Calculates average number of pixels for the report
+     *
+     * @param {map} peerResolutions a map of peer resolutions
+     * @param {boolean} isLocal if the average is to be calculated for the local
+     * video or <tt>false</tt> if for remote videos.
+     * @param {VideoType} videoType
+     * @return {number|NaN} average number of pixels or <tt>NaN</tt> if there
+     * are no samples.
+     * @private
+     */
+    _calculateAvgVideoPixels(peerResolutions, isLocal, videoType) {
+        let peerPixelsSum = 0;
+        let peerCount = 0;
+        const myID = this._conference.myUserId();
+
+        for (const peerID of Object.keys(peerResolutions)) {
+            if (isLocal ? peerID === myID : peerID !== myID) {
+                const participant
+                    = isLocal
+                        ? null
+                        : this._conference.getParticipantById(peerID);
+                const videosResolution = peerResolutions[peerID];
+
+                // Do not continue without participant for non local peerID
+                if ((isLocal || participant) && videosResolution) {
+                    const peerAvgPixels = this._calculatePeerAvgVideoPixels(
+                        videosResolution, participant, videoType);
+
+                    if (!isNaN(peerAvgPixels)) {
+                        peerPixelsSum += peerAvgPixels;
+                        peerCount += 1;
+                    }
+                }
+            }
+        }
+
+        return peerPixelsSum / peerCount;
+    }
+
+    /**
+     * Calculate average pixels for either remote or local participant
+     * @param {object} videos maps resolution per video SSRC
+     * @param {JitsiParticipant|null} participant remote participant or
+     * <tt>null</tt> for local video pixels calculation.
+     * @param {VideoType} videoType the type of the video for which an average
+     * will be calculated.
+     * @return {number|NaN} average video pixels of all participant's videos or
+     * <tt>NaN</tt> if currently not available
+     * @private
+     */
+    _calculatePeerAvgVideoPixels(videos, participant, videoType) {
+        let ssrcs = Object.keys(videos).map(ssrc => Number(ssrc));
+        let videoTracks = null;
+
+        // NOTE that this method is supposed to be called for the stats
+        // received from the current peerconnection.
+        const tpc = this._conference.getActivePeerConnection();
+
+        if (participant) {
+            videoTracks = participant.getTracksByMediaType(MediaType.VIDEO);
+            if (videoTracks) {
+                ssrcs
+                    = ssrcs.filter(
+                        ssrc => videoTracks.find(
+                            track =>
+                                !track.isMuted()
+                                    && track.getSSRC() === ssrc
+                                    && track.videoType === videoType));
+            }
+        } else {
+            videoTracks = this._conference.getLocalTracks(MediaType.VIDEO);
+            ssrcs
+                = ssrcs.filter(
+                    ssrc => videoTracks.find(
+                        track =>
+                            !track.isMuted()
+                                && tpc.getLocalSSRC(track) === ssrc
+                                && track.videoType === videoType));
+        }
+
+        let peerPixelsSum = 0;
+        let peerSsrcCount = 0;
+
+        for (const ssrc of ssrcs) {
+            const peerSsrcPixels
+                = Number(videos[ssrc].height) * Number(videos[ssrc].width);
+
+            // FPS is reported as 0 for users with no video
+            if (!isNaN(peerSsrcPixels) && peerSsrcPixels > 0) {
+                peerPixelsSum += peerSsrcPixels;
+                peerSsrcCount += 1;
+            }
+        }
+
+        return peerPixelsSum / peerSsrcCount;
+    }
+
 
     /**
      * Calculates average FPS for the report
@@ -668,6 +921,18 @@ export default class AvgRTPStatsReporter {
     }
 
     /**
+     * Resets the stats related to JVB connection. Must not be called when in
+     * P2P mode, because then the {@link AverageStatReport} instances are
+     * tracking P2P stats. Note that this should never happen unless something
+     * is wrong with the P2P and JVB121 events.
+     * @private
+     */
+    _resetAvgJvbStats() {
+        this._resetAvgStats();
+        this.jvbStatsMonitor._resetAvgStats();
+    }
+
+    /**
      * Reset cache of all averages and {@link _sampleIdx}.
      * @private
      */
@@ -690,6 +955,11 @@ export default class AvgRTPStatsReporter {
         this._avgLocalFPS.reset();
         this._avgLocalScreenFPS.reset();
 
+        this._avgRemoteCameraPixels.reset();
+        this._avgRemoteScreenPixels.reset();
+        this._avgLocalCameraPixels.reset();
+        this._avgLocalScreenPixels.reset();
+
         this._avgCQ.reset();
 
         this._sampleIdx = 0;
@@ -705,6 +975,9 @@ export default class AvgRTPStatsReporter {
         this._conference.off(
             ConnectionQualityEvents.LOCAL_STATS_UPDATED,
             this._onLocalStatsUpdated);
+        this._conference.off(
+            ConferenceEvents.JVB121_STATUS,
+            this._onJvb121StatusChanged);
         this.jvbStatsMonitor.dispose();
         this.p2pStatsMonitor.dispose();
     }

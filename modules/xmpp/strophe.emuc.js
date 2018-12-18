@@ -1,18 +1,16 @@
-/* a simple MUC connection plugin
- * can only handle a single MUC room
- */
-
-/* global $, Strophe */
+/* global $ */
 
 import { getLogger } from 'jitsi-meet-logger';
-const logger = getLogger(__filename);
+import { Strophe } from 'strophe.js';
 
 import ChatRoom from './ChatRoom';
 import { ConnectionPluginListenable } from './ConnectionPlugin';
 import XMPPEvents from '../../service/xmpp/XMPPEvents';
 
+const logger = getLogger(__filename);
+
 /**
- *
+ * MUC connection plugin.
  */
 class MucConnectionPlugin extends ConnectionPluginListenable {
     /**
@@ -160,13 +158,15 @@ class MucConnectionPlugin extends ConnectionPluginListenable {
     }
 
     /**
-     *
+     * TODO: Document
      * @param iq
      */
     onMute(iq) {
         const from = iq.getAttribute('from');
         const room = this.rooms[Strophe.getBareJidFromJid(from)];
 
+        // XXX What are the semantics of the return value? Why is it sometimes
+        // undefined and sometimes a boolean?
         if (!room) {
             return;
         }

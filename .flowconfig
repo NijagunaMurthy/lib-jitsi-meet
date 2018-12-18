@@ -5,20 +5,19 @@
 ; sync (e.g. the flow-bin version).
 ;
 [ignore]
-; Ignore packages in node_modules which we (i.e. the lib-jitsi-meet project)
-; have seen to cause errors and we have chosen not to fix.
+; Ignore polyfills
++.*/Libraries/polyfills/.*
+
+.*/\.git/.*
 
 [include]
 
 [libs]
-flow/
 
 [options]
 emoji=true
 
-module.system=node
-
-experimental.strict_type_args=true
+module.system=haste
 
 munge_underscores=true
 
@@ -26,11 +25,13 @@ module.name_mapper='^[./a-zA-Z0-9$_-]+\.\(bmp\|gif\|jpg\|jpeg\|png\|psd\|svg\|we
 
 suppress_type=$FlowIssue
 suppress_type=$FlowFixMe
-suppress_type=$FixMe
+suppress_type=$FlowFixMeProps
+suppress_type=$FlowFixMeState
 
+suppress_comment=\\(.\\|\n\\)*\\$FlowFixMe\\($\\|[^(]\\|(\\(<VERSION>\\)? *\\(site=[a-z,_]*react_native[a-z,_]*\\)?)\\)
+suppress_comment=\\(.\\|\n\\)*\\$FlowIssue\\((\\(<VERSION>\\)? *\\(site=[a-z,_]*react_native[a-z,_]*\\)?)\\)?:? #[0-9]+
 suppress_comment=\\(.\\|\n\\)*\\$FlowFixedInNextDeploy
-
-unsafe.enable_getters_and_setters=true
+suppress_comment=\\(.\\|\n\\)*\\$FlowExpectedError
 
 [version]
-^0.38.0
+^0.78
